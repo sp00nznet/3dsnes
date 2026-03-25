@@ -1,0 +1,12 @@
+{
+    "name": "The Legend of Zelda: A Link to the Past",
+    "ppu_mode": 1,
+    "notes": "Mode 1: BG1=4bpp walls/terrain, BG2=4bpp ground, BG3=2bpp HUD",
+    "layers": {
+        "bg1": { "z": 3.0, "depth": 3.0, "role": "walls_terrain" },
+        "bg2": { "z": 0.0, "depth": 1.0, "role": "ground" },
+        "bg3": { "z": 8.0, "depth": 0.5, "role": "hud" },
+        "sprites": { "z": 1.5, "depth": 2.0, "role": "characters" }
+    },
+    "pixel_scale": 1.0
+}

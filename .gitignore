@@ -1,0 +1,13 @@
+build/
+roms/
+*.smc
+*.sfc
+*.srm
+*.bak
+.vs/
+CMakeSettings.json
+ext/
+*.png
+!screenshot.png
+debug_output.txt
+.claude/
