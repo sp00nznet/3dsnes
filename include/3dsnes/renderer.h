@@ -24,11 +24,20 @@ typedef struct {
     uint32_t cube_vbo;         /* unit cube vertex data */
     uint32_t instance_vbo;     /* per-instance data (position + color) */
     int instance_capacity;
+    float *upload_buf;         /* pre-allocated CPU-side staging buffer */
+    int upload_buf_capacity;
 
     /* 2D overlay (original SNES framebuffer) */
     uint32_t fb_texture;
     uint32_t fb_vao;
     uint32_t fb_vbo;
+
+    /* Offscreen FBO for rendering (read back to SDL_Texture) */
+    uint32_t fbo;
+    uint32_t fbo_color;         /* color attachment texture */
+    uint32_t fbo_depth;         /* depth renderbuffer */
+    int fbo_width, fbo_height;
+    uint8_t *readback_buf;      /* CPU-side pixel readback buffer */
 
     /* Viewport */
     int width, height;
@@ -55,7 +64,10 @@ void renderer_upload_voxels(Renderer *r, const VoxelMesh *mesh);
 void renderer_upload_framebuffer(Renderer *r, const uint8_t *pixels,
                                   int width, int height);
 
-/* Render a frame */
+/* Render a frame (to offscreen FBO) */
 void renderer_draw(Renderer *r, const Camera *cam, int voxel_count);
+
+/* Read back rendered pixels from FBO (RGBA, top-down) */
+const uint8_t *renderer_readback(Renderer *r);
 
 #endif /* RENDERER_H */

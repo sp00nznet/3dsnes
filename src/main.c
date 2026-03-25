@@ -44,19 +44,25 @@
 #include "3dsnes/ppu_extract.h"
 #include "3dsnes/voxelizer.h"
 #include "3dsnes/renderer.h"
+#include "3dsnes/soft_renderer.h"
 #include "3dsnes/camera.h"
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
 static SDL_Window *g_window = NULL;
 static SDL_GLContext g_gl_ctx = NULL;
+static SDL_Renderer *g_sdl_renderer = NULL;
+static SDL_Texture *g_sdl_texture_3d = NULL;  /* RGBA for software renderer */
+static SDL_Texture *g_sdl_texture_2d = NULL;  /* RGBX for SNES framebuffer */
 static SDL_AudioDeviceID g_audio_dev = 0;
 
 static Snes *g_snes = NULL;
-static uint8_t g_pixel_buf[512 * 478 * 4];
-static int16_t g_audio_buf[534 * 2]; /* 1 frame @ 32040 Hz / 60 fps, stereo */
+static uint8_t g_pixel_buf[512 * 480 * 4]; /* must be 480 lines for ppu_putPixels */
+static int16_t g_audio_buf[800 * 2]; /* 1 frame @ 48000 Hz / 60 fps, stereo */
 
 static Renderer g_renderer;
+static SoftRenderer g_soft_renderer;
+static bool g_use_software = true;  /* default to software renderer */
 static Camera g_camera;
 static VoxelMesh g_voxel_mesh;
 static VoxelProfile g_profile;
@@ -94,24 +100,33 @@ static void handle_key(SDL_Keycode key, bool pressed) {
         BTN_A = 8, BTN_X = 9, BTN_L = 10, BTN_R = 11
     };
 
+    /* Match LakeSnes's exact key mapping */
     int btn = -1;
     switch (key) {
         case SDLK_UP:     btn = BTN_UP; break;
         case SDLK_DOWN:   btn = BTN_DOWN; break;
         case SDLK_LEFT:   btn = BTN_LEFT; break;
         case SDLK_RIGHT:  btn = BTN_RIGHT; break;
-        case SDLK_z:      btn = BTN_A; break;
-        case SDLK_x:      btn = BTN_B; break;
-        case SDLK_a:      btn = BTN_X; break;
-        case SDLK_s:      btn = BTN_Y; break;
-        case SDLK_q:      btn = BTN_L; break;
-        case SDLK_w:      btn = BTN_R; break;
-        case SDLK_TAB:    btn = BTN_SELECT; break;
-        case SDLK_RETURN: btn = BTN_START; break;
+        case SDLK_z:      btn = BTN_B; break;       /* B (like LakeSnes) */
+        case SDLK_x:      btn = BTN_A; break;       /* A (like LakeSnes) */
+        case SDLK_a:      btn = BTN_Y; break;       /* Y (like LakeSnes) */
+        case SDLK_s:      btn = BTN_X; break;       /* X (like LakeSnes) */
+        case SDLK_d:      btn = BTN_L; break;       /* L (like LakeSnes) */
+        case SDLK_c:      btn = BTN_R; break;       /* R (like LakeSnes) */
+        case SDLK_TAB:    btn = BTN_SELECT; break;  /* Select */
+        case SDLK_RETURN: btn = BTN_START; break;   /* Start */
+        case SDLK_SPACE:  btn = BTN_A; break;       /* alternate A/jump */
         default: break;
     }
     if (btn >= 0) {
-        snes_setButtonState(g_snes, 1, btn, pressed);
+        /* Debounce: only send if state actually changed */
+        static uint16_t btn_state = 0;
+        uint16_t mask = 1 << btn;
+        bool currently_pressed = (btn_state & mask) != 0;
+        if (pressed != currently_pressed) {
+            if (pressed) btn_state |= mask; else btn_state &= ~mask;
+            snes_setButtonState(g_snes, 1, btn, pressed);
+        }
     }
 }
 
@@ -126,6 +141,7 @@ static void process_events(void) {
             break;
 
         case SDL_KEYDOWN:
+            if (ev.key.repeat) break; /* ignore key repeats */
             if (ev.key.keysym.sym == SDLK_ESCAPE) {
                 g_running = false;
             } else if (ev.key.keysym.sym == SDLK_F1) {
@@ -253,12 +269,17 @@ int main(int argc, char *argv[]) {
 
     printf("OpenGL %s, %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
-    SDL_GL_SetSwapInterval(1); /* vsync */
+    SDL_GL_SetSwapInterval(0); /* no GL vsync — SDL_Renderer handles it */
+
+    /* Create SDL_Renderer for presentation (this path works with emulation) */
+    g_sdl_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, win_w, win_h);
+    g_sdl_texture_2d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBX8888, SDL_TEXTUREACCESS_STREAMING, 512, 480);
 
     /* ── Initialize audio ────────────────────────────────────── */
     SDL_AudioSpec want, have;
     SDL_memset(&want, 0, sizeof(want));
-    want.freq = 32040;
+    want.freq = 48000;
     want.format = AUDIO_S16;
     want.channels = 2;
     want.samples = 1024;
@@ -277,7 +298,7 @@ int main(int argc, char *argv[]) {
     }
 
     snes_setPixelFormat(g_snes, pixelFormatRGBX);
-    snes_setPixels(g_snes, g_pixel_buf);
+    /* NOTE: do NOT call snes_setPixels here — call it per-frame after snes_runFrame */
 
     /* Load ROM */
     int rom_size = 0;
@@ -294,7 +315,10 @@ int main(int argc, char *argv[]) {
 
     /* ── Initialize 3D systems ───────────────────────────────── */
     if (!renderer_init(&g_renderer, win_w, win_h)) {
-        fprintf(stderr, "Failed to initialize renderer\n");
+        fprintf(stderr, "Failed to initialize GL renderer\n");
+    }
+    if (!soft_renderer_init(&g_soft_renderer, win_w, win_h)) {
+        fprintf(stderr, "Failed to initialize software renderer\n");
         return 1;
     }
 
@@ -308,7 +332,7 @@ int main(int argc, char *argv[]) {
     g_camera.target_z = 112.0f;
     camera_update(&g_camera);
 
-    voxel_mesh_init(&g_voxel_mesh, 1000000);
+    voxel_mesh_init(&g_voxel_mesh, 2000000); /* pre-allocate large, never realloc */
     g_profile = voxel_profile_zelda_alttp();
 
     printf("\n3dSNES ready!\n");
@@ -318,86 +342,65 @@ int main(int argc, char *argv[]) {
     printf("  Z: A    X: B    Tab: Select    Enter: Start    Esc: Quit\n\n");
 
     /* ── Main loop ───────────────────────────────────────────── */
-    uint64_t frame_start;
-    const double frame_time_ms = 1000.0 / 60.098;
+    int wantedSamples = 800;
 
     while (g_running) {
-        frame_start = SDL_GetPerformanceCounter();
-
         /* Process input */
         process_events();
 
         /* Run one SNES frame */
         snes_runFrame(g_snes);
 
-        /* Extract audio samples from DSP after each frame */
-        snes_setSamples(g_snes, g_audio_buf, 534);
-
-        /* Queue audio — only push if buffer isn't too full */
+        /* Audio */
+        snes_setSamples(g_snes, g_audio_buf, wantedSamples);
         if (g_audio_dev > 0) {
-            uint32_t queued = SDL_GetQueuedAudioSize(g_audio_dev);
-            /* Keep ~3 frames buffered max to avoid latency/buzz */
-            if (queued < 534 * 2 * sizeof(int16_t) * 3) {
-                SDL_QueueAudio(g_audio_dev, g_audio_buf, 534 * 2 * sizeof(int16_t));
+            if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
+                SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
             }
         }
 
-        /* Extract PPU state into structured data */
+        /* Copy pixels for 2D overlay */
+        snes_setPixels(g_snes, g_pixel_buf);
+
+        /* Extract PPU state and voxelize (once per render, not per emu frame) */
         ppu_extract_frame(g_snes->ppu, &g_extracted);
-
-        /* Debug: print extraction stats every 120 frames (~2 sec) */
-        static int debug_counter = 0;
-        if (++debug_counter >= 120) {
-            debug_counter = 0;
-            int layer_counts[4] = {0};
-            for (int i = 0; i < g_extracted.bg_tile_count; i++) {
-                int l = g_extracted.bg_tiles[i].bg_layer;
-                if (l >= 0 && l < 4) layer_counts[l]++;
-            }
-            int prio_counts[4][2] = {{0}};
-            for (int i = 0; i < g_extracted.bg_tile_count; i++) {
-                int l = g_extracted.bg_tiles[i].bg_layer;
-                int p = g_extracted.bg_tiles[i].priority ? 1 : 0;
-                if (l >= 0 && l < 4) prio_counts[l][p]++;
-            }
-            printf("Mode=%d BG=%d (L0=%d[p0=%d,p1=%d] L2=%d[p0=%d,p1=%d]) Spr=%d Vox=%d\n",
-                g_extracted.mode, g_extracted.bg_tile_count,
-                layer_counts[0], prio_counts[0][0], prio_counts[0][1],
-                layer_counts[2], prio_counts[2][0], prio_counts[2][1],
-                g_extracted.sprite_count,
-                g_voxel_mesh.count);
-        }
-
-        /* Convert to voxels */
         voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
 
-        /* Upload to GPU */
-        renderer_upload_voxels(&g_renderer, &g_voxel_mesh);
+        /* Render and display */
+        SDL_RenderClear(g_sdl_renderer);
 
-        /* Upload 2D framebuffer for overlay */
-        renderer_upload_framebuffer(&g_renderer, g_pixel_buf, 512, 478);
-
-        /* Render */
-        renderer_draw(&g_renderer, &g_camera, g_voxel_mesh.count);
-
-        /* Swap */
-        SDL_GL_SwapWindow(g_window);
-
-        /* Frame timing (supplement vsync) */
-        uint64_t frame_end = SDL_GetPerformanceCounter();
-        double elapsed_ms = (double)(frame_end - frame_start) /
-                            (double)SDL_GetPerformanceFrequency() * 1000.0;
-        if (elapsed_ms < frame_time_ms) {
-            SDL_Delay((uint32_t)(frame_time_ms - elapsed_ms));
+        if (g_renderer.show_3d) {
+            /* Software 3D renderer */
+            static int dbg = 0;
+            if (++dbg == 60) { dbg = 0; printf("SW render: %d voxels\n", g_voxel_mesh.count); }
+            soft_renderer_draw(&g_soft_renderer, &g_camera,
+                               g_voxel_mesh.instances, g_voxel_mesh.count);
+            const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
+            SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
+                              g_soft_renderer.width * 4);
+            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_3d, NULL, NULL);
+        } else {
+            /* 2D SNES framebuffer */
+            void *tex_pixels; int tex_pitch;
+            SDL_LockTexture(g_sdl_texture_2d, NULL, &tex_pixels, &tex_pitch);
+            snes_setPixels(g_snes, (uint8_t*)tex_pixels);
+            SDL_UnlockTexture(g_sdl_texture_2d);
+            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_2d, NULL, NULL);
         }
+
+        SDL_RenderPresent(g_sdl_renderer);
     }
 
     /* ── Cleanup ─────────────────────────────────────────────── */
     voxel_mesh_free(&g_voxel_mesh);
+    soft_renderer_shutdown(&g_soft_renderer);
     renderer_shutdown(&g_renderer);
     snes_free(g_snes);
 
     if (g_audio_dev > 0) SDL_CloseAudioDevice(g_audio_dev);
+    SDL_DestroyTexture(g_sdl_texture_3d);
+    SDL_DestroyTexture(g_sdl_texture_2d);
+    SDL_DestroyRenderer(g_sdl_renderer);
     SDL_GL_DeleteContext(g_gl_ctx);
     SDL_DestroyWindow(g_window);
     SDL_Quit();

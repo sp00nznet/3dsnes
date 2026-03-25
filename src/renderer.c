@@ -131,7 +131,7 @@ bool renderer_init(Renderer *r, int width, int height) {
     memset(r, 0, sizeof(*r));
     r->width = width;
     r->height = height;
-    r->show_3d = true;
+    r->show_3d = false;  /* start in 2D — F1 toggles to 3D */
     r->show_overlay = false;
     r->wireframe = false;
 
@@ -206,6 +206,33 @@ bool renderer_init(Renderer *r, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
+    /* Pre-allocate CPU staging buffer */
+    r->upload_buf_capacity = 200000;
+    r->upload_buf = (float *)malloc(r->upload_buf_capacity * 7 * sizeof(float));
+
+    /* Create offscreen FBO for rendering */
+    r->fbo_width = width;
+    r->fbo_height = height;
+
+    glGenFramebuffers(1, &r->fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+
+    glGenTextures(1, &r->fbo_color);
+    glBindTexture(GL_TEXTURE_2D, r->fbo_color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->fbo_color, 0);
+
+    glGenRenderbuffers(1, &r->fbo_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, r->fbo_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, r->fbo_depth);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    /* Over-allocate readback buffer — GPU drivers may write extra padding */
+    r->readback_buf = (uint8_t *)malloc(width * height * 4 + 65536);
+
     /* OpenGL state */
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
@@ -223,6 +250,13 @@ void renderer_shutdown(Renderer *r) {
     glDeleteVertexArrays(1, &r->fb_vao);
     glDeleteBuffers(1, &r->fb_vbo);
     glDeleteTextures(1, &r->fb_texture);
+    free(r->upload_buf);
+    r->upload_buf = NULL;
+    free(r->readback_buf);
+    r->readback_buf = NULL;
+    glDeleteFramebuffers(1, &r->fbo);
+    glDeleteTextures(1, &r->fbo_color);
+    glDeleteRenderbuffers(1, &r->fbo_depth);
 }
 
 void renderer_resize(Renderer *r, int width, int height) {
@@ -232,18 +266,27 @@ void renderer_resize(Renderer *r, int width, int height) {
 }
 
 void renderer_upload_voxels(Renderer *r, const VoxelMesh *mesh) {
-    /* Grow buffer if needed */
-    if (mesh->count > r->instance_capacity) {
-        r->instance_capacity = mesh->count + 10000;
+    int count = mesh->count;
+    if (count == 0) return;
+
+    /* Grow GPU buffer if needed */
+    if (count > r->instance_capacity) {
+        r->instance_capacity = count + 10000;
         glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
         glBufferData(GL_ARRAY_BUFFER,
                      r->instance_capacity * 7 * sizeof(float),
                      NULL, GL_DYNAMIC_DRAW);
     }
 
+    /* Grow CPU staging buffer if needed (pre-allocated, no per-frame malloc) */
+    if (count > r->upload_buf_capacity) {
+        r->upload_buf_capacity = count + 10000;
+        free(r->upload_buf);
+        r->upload_buf = (float *)malloc(r->upload_buf_capacity * 7 * sizeof(float));
+    }
+
     /* Pack instance data: [x, y, z, r, g, b, a] as floats */
-    int count = mesh->count;
-    float *data = (float *)malloc(count * 7 * sizeof(float));
+    float *data = r->upload_buf;
     for (int i = 0; i < count; i++) {
         const VoxelInstance *v = &mesh->instances[i];
         data[i * 7 + 0] = v->x;
@@ -257,7 +300,7 @@ void renderer_upload_voxels(Renderer *r, const VoxelMesh *mesh) {
 
     glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, count * 7 * sizeof(float), data);
-    free(data);
+    /* No free — buffer is reused across frames */
 }
 
 void renderer_upload_framebuffer(Renderer *r, const uint8_t *pixels,
@@ -269,6 +312,10 @@ void renderer_upload_framebuffer(Renderer *r, const uint8_t *pixels,
 }
 
 void renderer_draw(Renderer *r, const Camera *cam, int voxel_count) {
+    /* Render to offscreen FBO */
+    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+    glViewport(0, 0, r->fbo_width, r->fbo_height);
+
     glClearColor(0.08f, 0.08f, 0.12f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -305,4 +352,46 @@ void renderer_draw(Renderer *r, const Camera *cam, int voxel_count) {
         glBindVertexArray(0);
         glEnable(GL_DEPTH_TEST);
     }
+
+    /* Unbind FBO */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+const uint8_t *renderer_readback(Renderer *r) {
+    int w = r->fbo_width, h = r->fbo_height;
+    int stride = w * 4;
+
+    /* Read from FBO using PBO for async (non-stalling) readback */
+    static GLuint pbo = 0;
+    static int pbo_size = 0;
+    int needed = w * h * 4;
+
+    if (pbo == 0 || pbo_size < needed) {
+        if (pbo) glDeleteBuffers(1, &pbo);
+        glGenBuffers(1, &pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, needed, NULL, GL_STREAM_READ);
+        pbo_size = needed;
+    } else {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    }
+
+    /* Initiate async read from FBO into PBO */
+    glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, 0); /* offset 0 = into PBO */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    /* Map PBO to CPU (this may stall, but PBO avoids corrupting other memory) */
+    void *mapped = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    if (mapped) {
+        /* Copy with vertical flip (OpenGL bottom-up -> SDL top-down) */
+        for (int y = 0; y < h; y++) {
+            memcpy(r->readback_buf + y * stride,
+                   (uint8_t*)mapped + (h - 1 - y) * stride, stride);
+        }
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+    return r->readback_buf;
 }

@@ -28,9 +28,8 @@ static void mesh_push(VoxelMesh *mesh, float x, float y, float z,
                        uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (mesh->count >= mesh->capacity) {
-        mesh->capacity *= 2;
-        mesh->instances = realloc(mesh->instances,
-                                   sizeof(VoxelInstance) * mesh->capacity);
+        /* Skip this voxel rather than realloc — prevents heap churn */
+        return;
     }
     VoxelInstance *v = &mesh->instances[mesh->count++];
     v->x = x;
