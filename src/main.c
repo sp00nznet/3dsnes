@@ -187,6 +187,8 @@ static void handle_key(SDL_Keycode key, bool pressed) {
 
 /* ── Screenshot ──────────────────────────────────────────────────── */
 
+static char g_rom_basename[256] = {0}; /* set from ROM path, used for test mode filenames */
+
 static void take_screenshot(SDL_Renderer *renderer, SDL_Window *window) {
     static int shot_num = 0;
     int w, h;
@@ -196,12 +198,35 @@ static void take_screenshot(SDL_Renderer *renderer, SDL_Window *window) {
     if (!pixels) return;
 
     if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_RGBA32, pixels, w * 4) == 0) {
-        char filename[256];
+        char filename[512];
         snprintf(filename, sizeof(filename), "screenshot_%04d.png", shot_num++);
         stbi_write_png(filename, w, h, 4, pixels, w * 4);
         printf("Screenshot saved: %s\n", filename);
         fflush(stdout);
         menu_show_toast(filename);
+    }
+    free(pixels);
+}
+
+static char g_test_output_dir[512] = {0}; /* set from argv[0] directory */
+
+static void take_test_screenshot(SDL_Renderer *renderer, const char *suffix) {
+    int w, h;
+    SDL_GetRendererOutputSize(renderer, &w, &h);
+    uint8_t *pixels = (uint8_t *)malloc(w * h * 4);
+    if (!pixels) return;
+    if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_RGBA32, pixels, w * 4) == 0) {
+        char filename[1024];
+        if (g_test_output_dir[0])
+            snprintf(filename, sizeof(filename), "%s/%s_%s.png", g_test_output_dir, g_rom_basename, suffix);
+        else
+            snprintf(filename, sizeof(filename), "%s_%s.png", g_rom_basename, suffix);
+        int ok = stbi_write_png(filename, w, h, 4, pixels, w * 4);
+        if (ok)
+            printf("Screenshot saved: %s\n", filename);
+        else
+            printf("Screenshot FAILED: %s\n", filename);
+        fflush(stdout);
     }
     free(pixels);
 }
@@ -393,10 +418,7 @@ static void process_events(void) {
 
         case SDL_WINDOWEVENT:
             if (ev.window.event == SDL_WINDOWEVENT_RESIZED) {
-                int w = ev.window.data1;
-                int h = ev.window.data2;
-                g_camera.aspect = (float)w / (float)h;
-                camera_update(&g_camera);
+                /* Camera aspect stays locked to render buffer, not window */
             }
             break;
         }
@@ -407,11 +429,21 @@ static void process_events(void) {
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: 3dsnes <rom.sfc>\n");
+        fprintf(stderr, "Usage: 3dsnes <rom.sfc> [--test]\n");
         return 1;
     }
 
     const char *rom_path = argv[1];
+    bool test_mode = (argc >= 3 && strcmp(argv[2], "--test") == 0);
+
+    /* Set test output directory from executable path */
+    if (test_mode) {
+        snprintf(g_test_output_dir, sizeof(g_test_output_dir), "%s", argv[0]);
+        char *last_sep = strrchr(g_test_output_dir, '/');
+        if (!last_sep) last_sep = strrchr(g_test_output_dir, '\\');
+        if (last_sep) *last_sep = '\0';
+        else g_test_output_dir[0] = '\0';
+    }
 
     /* ── Initialize SDL with OpenGL ──────────────────────────── */
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0) {
@@ -448,8 +480,8 @@ int main(int argc, char *argv[]) {
     }
     fflush(stdout);
     /* 3D texture at half resolution for performance — SDL_RenderCopy upscales */
-    /* 3D renders at fixed low resolution for CPU performance, SDL upscales */
-    int render_w = 320, render_h = 240;
+    /* 3D renders at SNES native resolution for correct aspect ratio, SDL upscales */
+    int render_w = 256, render_h = 224;
     g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, render_w, render_h);
     /* 2D texture at native SNES resolution — we extract the active 256x224 area */
     g_sdl_texture_2d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBX8888, SDL_TEXTUREACCESS_STREAMING, 256, 224);
@@ -496,6 +528,21 @@ int main(int argc, char *argv[]) {
     snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", rom_path);
     set_state_path_from_rom(rom_path);
 
+    /* Set ROM basename for test mode screenshots (sanitized for filenames) */
+    {
+        const char *s = strrchr(rom_path, '/');
+        if (!s) s = strrchr(rom_path, '\\');
+        snprintf(g_rom_basename, sizeof(g_rom_basename), "%s", s ? s + 1 : rom_path);
+        char *dot = strrchr(g_rom_basename, '.');
+        if (dot) *dot = '\0';
+        /* Replace unsafe chars with underscores */
+        for (char *p = g_rom_basename; *p; p++) {
+            if (*p == '!' || *p == '[' || *p == ']' || *p == '(' || *p == ')' ||
+                *p == '\'' || *p == '&' || *p == ' ')
+                *p = '_';
+        }
+    }
+
     /* Set window title from ROM name */
     {
         const char *slash = strrchr(rom_path, '/');
@@ -513,7 +560,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    camera_init(&g_camera, (float)win_w / (float)win_h);
+    camera_init(&g_camera, (float)render_w / (float)render_h);
     /* Start with a nice centered diorama view */
     g_camera.yaw = 0.0f;
     g_camera.pitch = 70.0f;    /* high angle — mostly top-down diorama */
@@ -746,6 +793,26 @@ int main(int argc, char *argv[]) {
 
                 printf("=== END DIAGNOSTIC ===\n\n");
                 fflush(stdout);
+            }
+        }
+
+        /* ── Test mode: auto-screenshot and exit ────────────────── */
+        if (test_mode) {
+            static Uint32 test_start = 0;
+            static int test_stage = 0;
+            if (test_start == 0) test_start = SDL_GetTicks();
+            Uint32 elapsed = SDL_GetTicks() - test_start;
+
+            if (test_stage == 0 && elapsed >= 8000) {
+                /* 8s: take 2D screenshot */
+                take_test_screenshot(g_sdl_renderer, "2d");
+                g_show_3d = true;
+                menu_set_3d_enabled(true);
+                test_stage = 1;
+            } else if (test_stage == 1 && elapsed >= 11000) {
+                /* 11s: take 3D screenshot and exit */
+                take_test_screenshot(g_sdl_renderer, "3d");
+                g_running = false;
             }
         }
 
