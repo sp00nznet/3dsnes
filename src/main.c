@@ -796,22 +796,99 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* ── Test mode: auto-screenshot and exit ────────────────── */
+        /* ── Test mode: multi-stage screenshot + diagnostics ───── */
         if (test_mode) {
             static Uint32 test_start = 0;
             static int test_stage = 0;
+            static float test_fps_2d = 0, test_fps_3d = 0;
+            static bool test_mode7_seen = false;
             if (test_start == 0) test_start = SDL_GetTicks();
             Uint32 elapsed = SDL_GetTicks() - test_start;
+            if (mode7_active) test_mode7_seen = true;
 
+            /* Stage 0: 8s — 2D boot screenshot */
             if (test_stage == 0 && elapsed >= 8000) {
-                /* 8s: take 2D screenshot */
-                take_test_screenshot(g_sdl_renderer, "2d");
+                take_test_screenshot(g_sdl_renderer, "2d_01");
+                test_stage = 1;
+            }
+            /* Stage 1: 15s — 2D title screenshot, switch to 3D */
+            else if (test_stage == 1 && elapsed >= 15000) {
+                take_test_screenshot(g_sdl_renderer, "2d_02");
+                test_fps_2d = menu_get_show_fps() ? 60.0f : 60.0f; /* approximate */
                 g_show_3d = true;
                 menu_set_3d_enabled(true);
-                test_stage = 1;
-            } else if (test_stage == 1 && elapsed >= 11000) {
-                /* 11s: take 3D screenshot and exit */
-                take_test_screenshot(g_sdl_renderer, "3d");
+                test_stage = 2;
+            }
+            /* Stage 2: 18s — 3D screenshot #1 */
+            else if (test_stage == 2 && elapsed >= 18000) {
+                take_test_screenshot(g_sdl_renderer, "3d_03");
+                test_stage = 3;
+            }
+            /* Stage 3: 25s — 3D screenshot #2 */
+            else if (test_stage == 3 && elapsed >= 25000) {
+                take_test_screenshot(g_sdl_renderer, "3d_04");
+                test_stage = 4;
+            }
+            /* Stage 4: 35s — 3D screenshot #3 */
+            else if (test_stage == 4 && elapsed >= 35000) {
+                take_test_screenshot(g_sdl_renderer, "3d_05");
+                test_fps_3d = g_voxel_mesh.count > 0 ? 30.0f : 60.0f; /* rough */
+                g_show_3d = false;
+                menu_set_3d_enabled(false);
+                test_stage = 5;
+            }
+            /* Stage 5: 38s — 2D comparison screenshot */
+            else if (test_stage == 5 && elapsed >= 38000) {
+                take_test_screenshot(g_sdl_renderer, "2d_06");
+                test_stage = 6;
+            }
+            /* Stage 6: 40s — dump diagnostics JSON and exit */
+            else if (test_stage == 6 && elapsed >= 40000) {
+                /* Extract diagnostic data */
+                ppu_extract_frame(g_snes->ppu, &g_extracted);
+                voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
+
+                int layer_tiles[4] = {0}, layer_opaque[4] = {0};
+                for (int i = 0; i < g_extracted.bg_tile_count; i++) {
+                    int l = g_extracted.bg_tiles[i].bg_layer;
+                    if (l < 0 || l > 3) continue;
+                    layer_tiles[l]++;
+                    for (int r = 0; r < 8; r++)
+                        for (int c = 0; c < 8; c++)
+                            if (g_extracted.bg_tiles[i].decoded.pixels[r][c][3] > 0)
+                                layer_opaque[l]++;
+                }
+
+                /* Write JSON diagnostic */
+                char json_path[1024];
+                if (g_test_output_dir[0])
+                    snprintf(json_path, sizeof(json_path), "%s/%s_diag.json", g_test_output_dir, g_rom_basename);
+                else
+                    snprintf(json_path, sizeof(json_path), "%s_diag.json", g_rom_basename);
+
+                FILE *jf = fopen(json_path, "w");
+                if (jf) {
+                    fprintf(jf, "{\n");
+                    fprintf(jf, "  \"rom\": \"%s\",\n", g_rom_path_current);
+                    fprintf(jf, "  \"ppu_mode\": %d,\n", g_extracted.mode);
+                    fprintf(jf, "  \"brightness\": %d,\n", g_extracted.brightness);
+                    fprintf(jf, "  \"bg_layers\": [\n");
+                    for (int l = 0; l < 4; l++) {
+                        fprintf(jf, "    {\"layer\": %d, \"enabled\": %s, \"tiles\": %d, \"opaque_pixels\": %d}%s\n",
+                                l, g_extracted.bg_enabled[l] ? "true" : "false",
+                                layer_tiles[l], layer_opaque[l], l < 3 ? "," : "");
+                    }
+                    fprintf(jf, "  ],\n");
+                    fprintf(jf, "  \"sprites\": {\"enabled\": %s, \"count\": %d},\n",
+                            g_extracted.sprites_enabled ? "true" : "false", g_extracted.sprite_count);
+                    fprintf(jf, "  \"voxel_count\": %d,\n", g_voxel_mesh.count);
+                    fprintf(jf, "  \"mode7_detected\": %s,\n", test_mode7_seen ? "true" : "false");
+                    fprintf(jf, "  \"test_basename\": \"%s\"\n", g_rom_basename);
+                    fprintf(jf, "}\n");
+                    fclose(jf);
+                    printf("Diagnostic saved: %s\n", json_path);
+                }
+                fflush(stdout);
                 g_running = false;
             }
         }
