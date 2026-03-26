@@ -98,6 +98,7 @@ static uint8_t *load_file(const char *path, int *size) {
         struct zip_t *zip = zip_open(path, 0, 'r');
         if (!zip) {
             fprintf(stderr, "Failed to open ZIP: %s\n", path);
+            menu_show_toast("Failed to open ZIP file");
             return NULL;
         }
         int entries = zip_total_entries(zip);
@@ -116,7 +117,10 @@ static uint8_t *load_file(const char *path, int *size) {
             zip_entry_close(zip);
         }
         zip_close(zip);
-        if (!data) fprintf(stderr, "No ROM found inside ZIP: %s\n", path);
+        if (!data) {
+            fprintf(stderr, "No ROM found inside ZIP: %s\n", path);
+            menu_show_toast("No .sfc/.smc ROM found inside ZIP");
+        }
         return data;
     }
 
@@ -124,6 +128,7 @@ static uint8_t *load_file(const char *path, int *size) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Failed to open: %s\n", path);
+        menu_show_toast("Failed to open ROM file");
         return NULL;
     }
     fseek(f, 0, SEEK_END);
@@ -272,10 +277,18 @@ static bool load_new_rom(const char *path) {
     snes_reset(g_snes, true);
     if (!snes_loadRom(g_snes, rom_data, rom_size)) {
         fprintf(stderr, "Failed to load ROM: %s\n", path);
+        menu_show_toast("Failed to load ROM (invalid or unsupported)");
         free(rom_data);
         return false;
     }
     printf("ROM loaded: %s (%d bytes)\n", path, rom_size);
+    {
+        const char *s = strrchr(path, '/');
+        if (!s) s = strrchr(path, '\\');
+        char msg[300];
+        snprintf(msg, sizeof(msg), "Loaded: %s", s ? s + 1 : path);
+        menu_show_toast(msg);
+    }
     free(rom_data);
 
     snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", path);

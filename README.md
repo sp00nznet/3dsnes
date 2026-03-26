@@ -12,8 +12,10 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 | *Jurassic Park — 3D voxel diorama* | *Jurassic Park — original 2D* |
 | ![Arkanoid 3D](docs/arkanoid_3d.png) | ![Aladdin 3D](docs/aladdin_3d.png) |
 | *Arkanoid: Doh It Again — bricks as 3D blocks* | *Disney's Aladdin — Agrabah marketplace* |
-| ![TMNT 3D](docs/tmnt_3d.png) | |
-| *TMNT IV: Turtles in Time — bridge fight* | |
+| ![Caesars Palace 3D](docs/caesars_3d.png) | ![TMNT 3D](docs/tmnt_3d.png) |
+| *Caesars Palace — building facade* | *TMNT IV: Turtles in Time — bridge fight* |
+| ![Cool Spot 3D](docs/coolspot_3d.png) | ![Street Fighter II](docs/sf2_3d.png) |
+| *Cool Spot — Virgin Games intro* | *Super Street Fighter II — character select* |
 
 ## How It Works
 
@@ -46,11 +48,16 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 |------|:---:|-------|
 | Zelda: A Link to the Past | Great | Indoor rooms look excellent. Outdoor areas work well. |
 | Super Mario World | Good | All layers visible. Text box backgrounds missing (needs windowing). |
-| Jurassic Park | Great | Top-down sections look excellent. Indoor FPS auto-falls back to 2D. |
+| Jurassic Park | Great | Top-down sections look excellent. Indoor FPS auto-falls back to 2D (Mode 7). |
 | Earthworm Jim | Good | Gameplay renders well. Some transparency artifacts from color math. |
 | TMNT IV: Turtles in Time | Good | Bridge/street fighting looks great. Some HDMA gradient issues on intros. |
 | Disney's Aladdin | Great | Marketplace scene is a standout. Beautiful with voxel depth. |
 | Arkanoid: Doh It Again | Great | Perfect fit — bricks render as actual 3D blocks. |
+| Caesars Palace | Great | Building facade and signs look incredible as voxel dioramas. |
+| Cool Spot | Good | Gameplay works well. Fun art style translates nicely to 3D. |
+| Super Street Fighter II | Good | Character select and stages render well. Some HDMA intro effects garbled. |
+| Mortal Kombat | Fair | Title screen works. Fights have HDMA background issues. |
+| Taz-Mania | Broken | Uses rotation/scaling effects that aren't Mode 7. Solid blue screen in 3D. |
 
 ### Known Limitations
 - **HDMA effects** — Per-scanline palette changes cause garbled colors on some screens
