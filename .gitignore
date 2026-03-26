@@ -6,9 +6,7 @@ roms/
 *.bak
 .vs/
 CMakeSettings.json
-ext/
-!ext/stb_image_write.h
-!ext/imgui
+# ext/ is tracked via submodules and direct commits
 *.png
 !docs/*.png
 !screenshot.png

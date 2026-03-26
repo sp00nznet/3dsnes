@@ -9,25 +9,19 @@ build-windows:
   tags:
     - windows
   script:
-    # Install cmake
+    # Install cmake (cached after first run)
     - choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress
-    # Refresh PATH
-    - Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"; Update-SessionEnvironment
-    # Install VC++ Build Tools via vs_buildtools directly
+    # Install VS Build Tools (cached after first run)
     - $vsBT = "C:\Windows\Temp\vs_buildtools.exe"
     - if (!(Test-Path $vsBT)) { Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $vsBT }
     - Start-Process -FilePath $vsBT -ArgumentList "--add","Microsoft.VisualStudio.Workload.VCTools","--includeRecommended","--quiet","--wait","--norestart" -Wait -NoNewWindow
-    # Find vcvarsall.bat
-    - Write-Host "Searching for vcvarsall.bat..."
+    # Refresh PATH + activate MSVC
+    - Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"; Update-SessionEnvironment
     - $vcvars = Get-ChildItem -Path "C:\" -Recurse -Filter "vcvarsall.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
-    - if (!$vcvars) { Write-Host "NOT FOUND - listing VS dirs"; Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio" -Recurse -Depth 4 -Directory -ErrorAction SilentlyContinue | Select-Object FullName; exit 1 }
-    - Write-Host "Found $($vcvars.FullName)"
-    # Activate MSVC environment
     - $vcvarsPath = $vcvars.FullName
     - '& cmd /c "call ""$vcvarsPath"" x64 >nul 2>&1 && set" | ForEach-Object { if ($_ -match "^(.+?)=(.*)$") { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }'
-    - Get-Command cl -ErrorAction Stop | Select-Object Source
-    # Clone imgui submodule
-    - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
+    # Init submodules (imgui, LakeSnes)
+    - git submodule update --init --recursive --depth 1
     # Install SDL2 via vcpkg
     - if (!(Test-Path C:\vcpkg\vcpkg.exe)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg; & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics }
     - C:\vcpkg\vcpkg install sdl2:x64-windows
