@@ -20,8 +20,9 @@ build-windows:
     - $vcvars = Get-ChildItem -Path "C:\" -Recurse -Filter "vcvarsall.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
     - $vcvarsPath = $vcvars.FullName
     - '& cmd /c "call ""$vcvarsPath"" x64 >nul 2>&1 && set" | ForEach-Object { if ($_ -match "^(.+?)=(.*)$") { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }'
-    # Init submodules (imgui, LakeSnes)
-    - git submodule update --init --recursive --depth 1
+    # Clone submodules manually (runner git lacks submodule command)
+    - if (!(Test-Path ext\imgui\imgui.h)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
+    - if (!(Test-Path ext\LakeSnes\snes\snes.h)) { git clone --depth 1 https://github.com/angelo-wf/LakeSnes.git ext/LakeSnes }
     # Install SDL2 via vcpkg
     - if (!(Test-Path C:\vcpkg\vcpkg.exe)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg; & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics }
     - C:\vcpkg\vcpkg install sdl2:x64-windows
