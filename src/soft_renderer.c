@@ -310,22 +310,23 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
     const int H = r->height;
     const size_t npixels = (size_t)W * (size_t)H;
 
-    /* Clear color buffer to clear color. ABGR byte order for RGBA8888 on LE. */
+    /* Clear color buffer using 32-bit fill. ABGR byte order for RGBA8888 on LE. */
     {
-        uint8_t *p = r->color_buf;
-        uint8_t cr = r->clear_r, cg = r->clear_g, cb = r->clear_b;
+        /* Byte order: [A=0xFF, B, G, R] → LE uint32: R<<24 | G<<16 | B<<8 | A */
+        uint32_t clear_val = (uint32_t)r->clear_r << 24 |
+                             (uint32_t)r->clear_g << 16 |
+                             (uint32_t)r->clear_b << 8  | 0xFF;
+        uint32_t *p = (uint32_t *)r->color_buf;
         for (size_t i = 0; i < npixels; i++) {
-            p[0] = 255; p[1] = cb; p[2] = cg; p[3] = cr;
-            p += 4;
+            p[i] = clear_val;
         }
     }
 
-    /* Clear depth buffer to 1.0 (far). */
+    /* Clear depth buffer. IEEE 754: 1.0f = 0x3F800000, use memset-compatible fill. */
     {
-        float *d = r->depth_buf;
-        /* Fill with 1.0f.  IEEE 754: 1.0f = 0x3F800000. */
+        uint32_t *d = (uint32_t *)r->depth_buf;
         for (size_t i = 0; i < npixels; i++) {
-            d[i] = 1.0f;
+            d[i] = 0x3F800000;
         }
     }
 
@@ -360,14 +361,19 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
         const float vy = v->y;
         const float vz = v->z;
 
-        /* Quick reject: if the voxel center is behind the camera in
-         * view space, skip it.  We check the clip-space w of the center. */
+        /* Quick reject: clip-space bounds check on voxel center.
+         * Skips voxels behind camera or far off-screen. */
         {
             float cx = vx + 0.5f;
             float cy = vy + 0.5f;
             float cz = vz + 0.5f;
             Vec4 cc = mat4_transform(mvp, cx, cy, cz);
             if (cc.w <= 0.0f) continue;
+            /* NDC check with margin — skip if center is way off screen */
+            float iw = 1.0f / cc.w;
+            float ndx = cc.x * iw;
+            float ndy = cc.y * iw;
+            if (ndx < -1.5f || ndx > 1.5f || ndy < -1.5f || ndy > 1.5f) continue;
         }
 
         /* Project all 8 corners. */

@@ -57,6 +57,50 @@ static float pixel_brightness(uint8_t r, uint8_t g, uint8_t b) {
  * This lays the SNES screen flat on a table and extrudes walls/sprites upward.
  */
 
+/* Check if a BG layer is a solid-color fill (>80% same quantized color).
+ * These layers are flat backgrounds that block the 3D view uselessly. */
+static bool is_solid_color_layer(const ExtractedFrame *frame, int check_layer) {
+    /* Quantize colors to 4-bit per channel and count the most common */
+    int total = 0, max_count = 0;
+    uint16_t max_key = 0;
+
+    /* Simple frequency count with small bucket array */
+    typedef struct { uint16_t key; int count; } Bucket;
+    Bucket buckets[64];
+    int nbuckets = 0;
+
+    for (int i = 0; i < frame->bg_tile_count; i++) {
+        if (frame->bg_tiles[i].bg_layer != check_layer) continue;
+        /* Sample 4 corners per tile for speed */
+        const int coords[4][2] = {{0,0},{0,7},{7,0},{7,7}};
+        for (int s = 0; s < 4; s++) {
+            const uint8_t *px = frame->bg_tiles[i].decoded.pixels[coords[s][0]][coords[s][1]];
+            if (px[3] == 0) continue;
+            if (px[0] + px[1] + px[2] < 12) continue;
+            total++;
+            uint16_t key = ((px[0] >> 4) << 8) | ((px[1] >> 4) << 4) | (px[2] >> 4);
+            int found = -1;
+            for (int b = 0; b < nbuckets; b++) {
+                if (buckets[b].key == key) { found = b; break; }
+            }
+            if (found >= 0) {
+                buckets[found].count++;
+                if (buckets[found].count > max_count) {
+                    max_count = buckets[found].count;
+                    max_key = key;
+                }
+            } else if (nbuckets < 64) {
+                buckets[nbuckets].key = key;
+                buckets[nbuckets].count = 1;
+                if (1 > max_count) { max_count = 1; max_key = key; }
+                nbuckets++;
+            }
+        }
+    }
+    /* If >80% of sampled pixels are the same color, it's a solid fill */
+    return total > 50 && max_count > total * 80 / 100;
+}
+
 /* Voxelize background tiles with depth extrusion + brightness + priority */
 static void voxelize_bg_tiles(const ExtractedFrame *frame,
                                const VoxelProfile *profile,
@@ -65,12 +109,22 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
     float scale = profile->pixel_scale;
     float bright_scale = profile->brightness_depth;
 
+    /* Pre-pass: detect solid-color layers to skip */
+    bool skip_layer[4] = {false, false, false, false};
+    for (int l = 0; l < 4; l++) {
+        if (profile->bg_depth[l] <= 0.0f) continue;
+        if (is_solid_color_layer(frame, l)) {
+            skip_layer[l] = true;
+        }
+    }
+
     for (int i = 0; i < frame->bg_tile_count; i++) {
         const ExtractedBgTile *bt = &frame->bg_tiles[i];
         int layer = bt->bg_layer;
 
-        /* Skip layers with zero depth */
+        /* Skip layers with zero depth or detected as solid-color fill */
         if (profile->bg_depth[layer] <= 0.0f) continue;
+        if (skip_layer[layer]) continue;
 
         float y_base = profile->bg_z[layer];
         float depth = profile->bg_depth[layer];
