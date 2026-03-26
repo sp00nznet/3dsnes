@@ -219,8 +219,10 @@ void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
                     VoxelMesh *mesh)
 {
     voxel_mesh_clear(mesh);
-    voxelize_bg_tiles(frame, profile, mesh);
+    /* Sprites first — they're the most important visual elements
+     * (characters, items, projectiles) and must not be cut by voxel cap */
     voxelize_sprites(frame, profile, mesh);
+    voxelize_bg_tiles(frame, profile, mesh);
 }
 
 VoxelProfile voxel_profile_zelda_alttp(void) {
