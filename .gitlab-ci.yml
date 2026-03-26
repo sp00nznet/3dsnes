@@ -9,17 +9,19 @@ build-windows:
   tags:
     - windows
   script:
-    # Install build tools (cached from previous runs)
+    # Install cmake
     - choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress
-    - choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y --no-progress
+    # Install VS Build Tools with C++ workload using the installer directly
+    - $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+    - if (Test-Path $installer) { Write-Host "VS Installer found"; & $installer modify --installPath "C:\BuildTools" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet --wait 2>&1 | Out-Null } else { Write-Host "Installing VS Build Tools from scratch"; choco install visualstudio2022buildtools --package-parameters "'--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --quiet'" -y --no-progress }
     # Refresh PATH
     - Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"; Update-SessionEnvironment
-    # Find and activate MSVC
-    - $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    - $vsPath = & $vsWhere -latest -property installationPath
-    - Write-Host "VS Install Path = $vsPath"
-    - $vcvarsall = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
-    - '& cmd /c "call ""$vcvarsall"" x64 && set" | ForEach-Object { if ($_ -match "^(.+?)=(.*)$") { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }'
+    # Find vcvarsall.bat wherever it is
+    - Write-Host "Searching for vcvarsall.bat..."
+    - $vcvars = Get-ChildItem -Path "C:\Program Files*","C:\BuildTools" -Recurse -Filter "vcvarsall.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
+    - if (!$vcvars) { Write-Host "ERROR - vcvarsall.bat not found. Listing VS directories..."; Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object FullName; exit 1 }
+    - Write-Host "Found - $($vcvars.FullName)"
+    - '& cmd /c "call ""$($vcvars.FullName)"" x64 && set" | ForEach-Object { if ($_ -match "^(.+?)=(.*)$") { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }'
     - Get-Command cl | Select-Object Source
     # Clone imgui submodule
     - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
