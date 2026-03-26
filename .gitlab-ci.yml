@@ -9,14 +9,18 @@ build-windows:
   tags:
     - windows
   script:
-    # Install build tools via chocolatey
+    # Install build tools (cached from previous runs)
     - choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress
     - choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y --no-progress
-    # Refresh PATH for this session (refreshenv doesn't work in PS)
+    # Refresh PATH
     - Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"; Update-SessionEnvironment
-    # Also find VS build tools and add to PATH
+    # Find and activate MSVC
     - $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    - if (Test-Path $vsWhere) { $vsPath = & $vsWhere -latest -property installationPath; Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll" -ErrorAction SilentlyContinue; Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -ErrorAction SilentlyContinue }
+    - $vsPath = & $vsWhere -latest -property installationPath
+    - Write-Host "VS Install Path = $vsPath"
+    - $vcvarsall = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
+    - '& cmd /c "call ""$vcvarsall"" x64 && set" | ForEach-Object { if ($_ -match "^(.+?)=(.*)$") { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }'
+    - Get-Command cl | Select-Object Source
     # Clone imgui submodule
     - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
     # Install SDL2 via vcpkg
