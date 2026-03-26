@@ -10,12 +10,16 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 |:---:|:---:|
 | ![Jurassic Park 3D](docs/jp_3d.png) | ![Jurassic Park 2D](docs/jp_2d.png) |
 | *Jurassic Park — 3D voxel diorama* | *Jurassic Park — original 2D* |
+| ![Lemmings 3D](docs/lemmings_3d.png) | ![Lemmings 2D](docs/lemmings_2d.png) |
+| *Lemmings — rocky cliff in 3D* | *Lemmings — original 2D* |
 | ![Arkanoid 3D](docs/arkanoid_3d.png) | ![Aladdin 3D](docs/aladdin_3d.png) |
-| *Arkanoid: Doh It Again — bricks as 3D blocks* | *Disney's Aladdin — Agrabah marketplace* |
+| *Arkanoid — bricks as 3D blocks* | *Aladdin — Agrabah marketplace* |
 | ![Caesars Palace 3D](docs/caesars_3d.png) | ![TMNT 3D](docs/tmnt_3d.png) |
-| *Caesars Palace — building facade* | *TMNT IV: Turtles in Time — bridge fight* |
-| ![Cool Spot 3D](docs/coolspot_3d.png) | ![Street Fighter II](docs/sf2_3d.png) |
-| *Cool Spot — Virgin Games intro* | *Super Street Fighter II — character select* |
+| *Caesars Palace — building facade* | *TMNT IV — bridge fight* |
+| ![Zelda Triforce](docs/zelda_triforce_3d.png) | ![Chrono Trigger](docs/chrono_3d.png) |
+| *Zelda: ALTTP — Triforce intro* | *Chrono Trigger — pendulum intro* |
+| ![Illusion of Gaia](docs/gaia_3d.png) | ![Street Fighter II](docs/sf2_3d.png) |
+| *Illusion of Gaia — Earth globe* | *Super Street Fighter II — character select* |
 
 ## How It Works
 
@@ -41,29 +45,11 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 - Per-game voxel profiles with auto-detection
 - Time-decoupled emulation (game runs at full 60fps regardless of render speed)
 - Sky color auto-detection for scene background
+- Automated ROM test suite (`--test` flag)
 
 ## Game Compatibility
 
-| Game | 3D Quality | Notes |
-|------|:---:|-------|
-| Zelda: A Link to the Past | Great | Indoor rooms look excellent. Outdoor areas work well. |
-| Super Mario World | Good | All layers visible. Text box backgrounds missing (needs windowing). |
-| Jurassic Park | Great | Top-down sections look excellent. Indoor FPS auto-falls back to 2D (Mode 7). |
-| Earthworm Jim | Good | Gameplay renders well. Some transparency artifacts from color math. |
-| TMNT IV: Turtles in Time | Good | Bridge/street fighting looks great. Some HDMA gradient issues on intros. |
-| Disney's Aladdin | Great | Marketplace scene is a standout. Beautiful with voxel depth. |
-| Arkanoid: Doh It Again | Great | Perfect fit — bricks render as actual 3D blocks. |
-| Caesars Palace | Great | Building facade and signs look incredible as voxel dioramas. |
-| Cool Spot | Good | Gameplay works well. Fun art style translates nicely to 3D. |
-| Super Street Fighter II | Good | Character select and stages render well. Some HDMA intro effects garbled. |
-| Mortal Kombat | Fair | Title screen works. Fights have HDMA background issues. |
-| Taz-Mania | Broken | Uses rotation/scaling effects that aren't Mode 7. Solid blue screen in 3D. |
-
-### Known Limitations
-- **HDMA effects** — Per-scanline palette changes cause garbled colors on some screens
-- **Window masking** — Text boxes and status bar clipping not implemented
-- **Color math** — Transparency/blending effects not extracted
-- **Mode 7** — Falls back to 2D (by design — Mode 7 is already pseudo-3D)
+See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full compatibility matrix with 70+ tested games, ratings, screenshots, and known issues.
 
 ## Controls
 
