@@ -9,17 +9,13 @@ build-windows:
   tags:
     - windows
   script:
-    # Detect build environment
-    - Write-Host "=== Build Environment ==="
-    - Get-Command cmake -ErrorAction SilentlyContinue | Select-Object Source
-    - Get-Command gcc -ErrorAction SilentlyContinue | Select-Object Source
-    - Get-Command cl -ErrorAction SilentlyContinue | Select-Object Source
-    - Get-Command make -ErrorAction SilentlyContinue | Select-Object Source
-    - Get-Command mingw32-make -ErrorAction SilentlyContinue | Select-Object Source
-    - Get-Command g++ -ErrorAction SilentlyContinue | Select-Object Source
-    - Write-Host "PATH entries with compiler-like names:"
-    - $env:PATH -split ';' | Where-Object { $_ -match 'mingw|msvc|gcc|cmake|visual|build' } | ForEach-Object { Write-Host "  $_" }
-    - Write-Host "=== Listing C:\Program Files ==="
-    - Get-ChildItem "C:\Program Files" -ErrorAction SilentlyContinue | Select-Object Name
-    - Get-ChildItem "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Select-Object Name
+    # Probe what's available
+    - Write-Host "=== Probing ==="
+    - Get-Command choco -ErrorAction SilentlyContinue
+    - Get-Command winget -ErrorAction SilentlyContinue
+    - Get-Command scoop -ErrorAction SilentlyContinue
+    - Get-ChildItem "C:\Program Files" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
+    - Get-ChildItem "C:\Program Files (x86)" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
+    - Get-ChildItem "C:\" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
+    - $env:PATH -split ';' | ForEach-Object { Write-Host $_ }
     - Write-Host "=== Done ==="
