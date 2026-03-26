@@ -12,9 +12,11 @@ build-windows:
     # Install build tools via chocolatey
     - choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress
     - choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y --no-progress
-    - refreshenv
-    # Refresh PATH for this session
-    - $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
+    # Refresh PATH for this session (refreshenv doesn't work in PS)
+    - Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"; Update-SessionEnvironment
+    # Also find VS build tools and add to PATH
+    - $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    - if (Test-Path $vsWhere) { $vsPath = & $vsWhere -latest -property installationPath; Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll" -ErrorAction SilentlyContinue; Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -ErrorAction SilentlyContinue }
     # Clone imgui submodule
     - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
     # Install SDL2 via vcpkg
