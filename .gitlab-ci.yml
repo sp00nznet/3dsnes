@@ -9,28 +9,18 @@ build-windows:
   tags:
     - windows
   script:
-    # Init submodules manually (git submodule requires full git install)
-    - git init
-    - git remote add origin %CI_REPOSITORY_URL% 2>nul || echo remote exists
-    - git fetch origin master --depth=20
-    - git checkout FETCH_HEAD
-    # Clone imgui submodule manually
-    - if not exist ext\imgui git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui
+    # Clone imgui submodule manually (runner's git doesn't support submodules)
+    - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
     # Install SDL2 via vcpkg
-    - if not exist C:\vcpkg git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-    - if not exist C:\vcpkg\vcpkg.exe call C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+    - if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
+    - if (!(Test-Path C:\vcpkg\vcpkg.exe)) { & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics }
     - C:\vcpkg\vcpkg install sdl2:x64-windows
     # Build
     - cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -A x64
     - cmake --build build --config Release
-    - dir build\Release\3dsnes.exe
+    - Get-ChildItem build\Release\3dsnes.exe
   artifacts:
     paths:
       - build/Release/3dsnes.exe
       - build/Release/*.dll
     expire_in: 1 week
-  cache:
-    key: vcpkg-sdl2
-    paths:
-      - C:/vcpkg/installed/
-      - C:/vcpkg/packages/
