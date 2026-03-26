@@ -181,11 +181,13 @@ static void voxelize_sprites(const ExtractedFrame *frame,
     int total_depth = (int)(depth + 0.5f);
     if (total_depth < 1) total_depth = 1;
 
+    float bright_scale = profile->brightness_depth;
+
     for (int i = 0; i < frame->sprite_count; i++) {
         const ExtractedSprite *sp = &frame->sprites[i];
 
         /* All sprites at same base height — priority gives slight lift */
-        float y_off = y_base + sp->priority * 1.0f;
+        float y_off = y_base + sp->priority * 1.5f;
 
         for (int row = 0; row < sp->height && row < 64; row++) {
             for (int col = 0; col < sp->width && col < 64; col++) {
@@ -199,8 +201,12 @@ static void voxelize_sprites(const ExtractedFrame *frame,
                 float wx = sx * scale;
                 float wz = sy * scale;
 
-                /* Extrude upward (Y+) — uniform color for clean solid look */
-                for (int d = 0; d < total_depth; d++) {
+                /* Brightness heightmap on sprites too — faces/highlights pop out */
+                float bright = pixel_brightness(px[0], px[1], px[2]);
+                int extra = (int)(bright * bright_scale * total_depth * 0.5f + 0.5f);
+                int sprite_h = total_depth + extra;
+
+                for (int d = 0; d < sprite_h; d++) {
                     float wy = y_off + d;
                     mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], px[3]);
                 }
@@ -241,22 +247,19 @@ VoxelProfile voxel_profile_zelda_alttp(void) {
      * All BG0 tiles get base depth of 8. Brightness adds subtle variation.
      * This gives everything good volume while keeping surfaces smooth.
      */
-    p.bg_depth[0] = 4.0f;  /* BG0: solid base depth */
-    p.bg_depth[1] = 2.0f;  /* BG1: secondary layer */
+    p.bg_depth[0] = 6.0f;  /* BG0: solid base — tall enough for real depth */
+    p.bg_depth[1] = 3.0f;  /* BG1: secondary layer — moderate */
     p.bg_depth[2] = 1.0f;  /* BG2: HUD/text — thin */
     p.bg_depth[3] = 0.0f;
 
-    p.sprite_z = 4.0f;     /* sprites sit above the base floor */
-    p.sprite_depth = 4.0f;  /* sprites are 4 voxels tall — clean and proportional */
+    p.sprite_z = 5.0f;     /* sprites sit above the base floor */
+    p.sprite_depth = 6.0f;  /* sprites are tall — prominent in the scene */
     p.pixel_scale = 1.0f;
 
-    /*
-     * Brightness-based depth: subtle variation — keeps surfaces smooth
-     * while giving bright areas a gentle lift over dark areas.
-     * 0.5 = moderate — bright pixels add up to 50% extra.
-     */
-    p.brightness_depth = 0.5f;
-    p.bg_skip_layer = -1;  /* no sky filtering for Zelda */
+    /* Brightness heightmap: bright pixels pop out, dark pixels stay low.
+     * Creates an embossed relief effect — highlights literally rise above shadows. */
+    p.brightness_depth = 1.5f;
+    p.bg_skip_layer = -1;
 
     return p;
 }
@@ -276,20 +279,20 @@ VoxelProfile voxel_profile_smw(void) {
      *   Sprites        at Y=4     — Mario, enemies, items
      *   BG2 (status)  at Y=20    — floating HUD
      */
-    p.bg_z[0] = 2.0f;     /* BG0 (BG1): main level geometry */
+    p.bg_z[0] = 3.0f;     /* BG0 (BG1): main level geometry — raised */
     p.bg_z[1] = 0.0f;     /* BG1 (BG2): background scenery — flat behind */
-    p.bg_z[2] = 7.0f;     /* BG2 (BG3): above scene content (title text, status bar) */
+    p.bg_z[2] = 12.0f;    /* BG2 (BG3): above scene (title text, status bar) */
     p.bg_z[3] = 0.0f;
 
-    p.bg_depth[0] = 2.0f;  /* BG0: level blocks */
-    p.bg_depth[1] = 1.0f;  /* BG1: background (sky + mountains) — flat */
+    p.bg_depth[0] = 5.0f;  /* BG0: level blocks — chunky */
+    p.bg_depth[1] = 2.0f;  /* BG1: background — moderate depth */
     p.bg_depth[2] = 1.0f;  /* BG2: thin (status bar / title text) */
     p.bg_depth[3] = 0.0f;
 
-    p.sprite_z = 3.0f;
-    p.sprite_depth = 3.0f;
+    p.sprite_z = 5.0f;
+    p.sprite_depth = 5.0f;
     p.pixel_scale = 1.0f;
-    p.brightness_depth = 0.3f;  /* subtle variation */
+    p.brightness_depth = 1.5f;  /* strong relief — bright pixels pop */
     p.bg_skip_layer = 1;        /* skip BG1 sky-colored pixels */
     p.sky_r = p.sky_g = p.sky_b = 0; /* set at runtime */
 
@@ -299,20 +302,20 @@ VoxelProfile voxel_profile_smw(void) {
 VoxelProfile voxel_profile_generic(void) {
     VoxelProfile p;
 
-    p.bg_z[0] = 2.0f;     /* main playfield — extruded */
+    p.bg_z[0] = 3.0f;     /* main playfield — raised */
     p.bg_z[1] = 0.0f;     /* background — flat behind */
     p.bg_z[2] = 0.0f;     /* background 2 — flat behind */
     p.bg_z[3] = 0.0f;     /* background 3 — flat behind */
 
-    p.bg_depth[0] = 2.0f; /* main layer gets height */
-    p.bg_depth[1] = 1.0f; /* backgrounds are flat */
-    p.bg_depth[2] = 1.0f;
+    p.bg_depth[0] = 5.0f; /* main layer — prominent height */
+    p.bg_depth[1] = 2.0f; /* backgrounds — moderate */
+    p.bg_depth[2] = 2.0f;
     p.bg_depth[3] = 1.0f;
 
-    p.sprite_z = 3.0f;
-    p.sprite_depth = 2.0f;
+    p.sprite_z = 5.0f;
+    p.sprite_depth = 5.0f;
     p.pixel_scale = 1.0f;
-    p.brightness_depth = 0.2f; /* less extrusion variation */
+    p.brightness_depth = 1.5f; /* strong relief effect */
     p.bg_skip_layer = -1;
 
     return p;

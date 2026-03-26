@@ -647,10 +647,9 @@ int main(int argc, char *argv[]) {
         /* Copy pixels for 2D display (from last emu frame) */
         snes_setPixels(g_snes, g_pixel_buf);
 
-        /* Auto-fallback: Mode 7 and low brightness can't be voxelized well */
+        /* Auto-fallback: Mode 7 can't be voxelized */
         bool mode7_active = (g_snes->ppu->mode == 7);
-        bool brightness_too_low = (g_snes->ppu->brightness < 5);
-        bool show_3d_this_frame = g_show_3d && !mode7_active && !brightness_too_low;
+        bool show_3d_this_frame = g_show_3d && !mode7_active;
 
         /* Only extract/voxelize when in 3D mode and not Mode 7 */
         if (show_3d_this_frame) {
