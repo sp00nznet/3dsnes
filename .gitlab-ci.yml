@@ -9,18 +9,17 @@ build-windows:
   tags:
     - windows
   script:
-    # Clone imgui submodule manually (runner's git doesn't support submodules)
-    - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
-    # Install SDL2 via vcpkg
-    - if (!(Test-Path C:\vcpkg)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg }
-    - if (!(Test-Path C:\vcpkg\vcpkg.exe)) { & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics }
-    - C:\vcpkg\vcpkg install sdl2:x64-windows
-    # Build
-    - cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -A x64
-    - cmake --build build --config Release
-    - Get-ChildItem build\Release\3dsnes.exe
-  artifacts:
-    paths:
-      - build/Release/3dsnes.exe
-      - build/Release/*.dll
-    expire_in: 1 week
+    # Detect build environment
+    - Write-Host "=== Build Environment ==="
+    - Get-Command cmake -ErrorAction SilentlyContinue | Select-Object Source
+    - Get-Command gcc -ErrorAction SilentlyContinue | Select-Object Source
+    - Get-Command cl -ErrorAction SilentlyContinue | Select-Object Source
+    - Get-Command make -ErrorAction SilentlyContinue | Select-Object Source
+    - Get-Command mingw32-make -ErrorAction SilentlyContinue | Select-Object Source
+    - Get-Command g++ -ErrorAction SilentlyContinue | Select-Object Source
+    - Write-Host "PATH entries with compiler-like names:"
+    - $env:PATH -split ';' | Where-Object { $_ -match 'mingw|msvc|gcc|cmake|visual|build' } | ForEach-Object { Write-Host "  $_" }
+    - Write-Host "=== Listing C:\Program Files ==="
+    - Get-ChildItem "C:\Program Files" -ErrorAction SilentlyContinue | Select-Object Name
+    - Get-ChildItem "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Select-Object Name
+    - Write-Host "=== Done ==="
