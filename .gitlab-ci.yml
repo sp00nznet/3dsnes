@@ -1,54 +1,36 @@
 stages:
   - build
-  - test
 
 variables:
-  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_STRATEGY: none
 
-# --- Build (Linux) ---
-build-linux:
+build-windows:
   stage: build
-  image: ubuntu:22.04
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git
-        libsdl2-dev libgl-dev
+  tags:
+    - windows
   script:
-    - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-    - cmake --build build --config Release -j$(nproc)
-    - ls -la build/3dsnes build/test_emu 2>/dev/null || ls -la build/Release/ 2>/dev/null
+    # Init submodules manually (git submodule requires full git install)
+    - git init
+    - git remote add origin %CI_REPOSITORY_URL% 2>nul || echo remote exists
+    - git fetch origin master --depth=20
+    - git checkout FETCH_HEAD
+    # Clone imgui submodule manually
+    - if not exist ext\imgui git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui
+    # Install SDL2 via vcpkg
+    - if not exist C:\vcpkg git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+    - if not exist C:\vcpkg\vcpkg.exe call C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+    - C:\vcpkg\vcpkg install sdl2:x64-windows
+    # Build
+    - cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release -A x64
+    - cmake --build build --config Release
+    - dir build\Release\3dsnes.exe
   artifacts:
     paths:
-      - build/
+      - build/Release/3dsnes.exe
+      - build/Release/*.dll
     expire_in: 1 week
-
-# --- Build (Windows cross-compile, optional) ---
-# Uncomment if you have a Windows runner
-# build-windows:
-#   stage: build
-#   tags:
-#     - windows
-#   script:
-#     - cmake -S . -B build
-#     - cmake --build build --config Release
-#   artifacts:
-#     paths:
-#       - build/Release/3dsnes.exe
-#     expire_in: 1 week
-
-# --- Test (smoke test - verify binary runs) ---
-test-smoke:
-  stage: test
-  image: ubuntu:22.04
-  needs: [build-linux]
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq libsdl2-2.0-0 libgl1 xvfb
-  script:
-    # Run with virtual framebuffer (no display needed)
-    - export SDL_VIDEODRIVER=dummy
-    - export SDL_AUDIODRIVER=dummy
-    # Verify binary exists and prints usage
-    - chmod +x build/3dsnes || true
-    - build/3dsnes 2>&1 | head -5 || true
-    - echo "Smoke test passed - binary built successfully"
+  cache:
+    key: vcpkg-sdl2
+    paths:
+      - C:/vcpkg/installed/
+      - C:/vcpkg/packages/
