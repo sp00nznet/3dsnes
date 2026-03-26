@@ -15,7 +15,7 @@
 typedef struct Ppu Ppu;
 
 /* Maximum entities per frame */
-#define MAX_BG_TILES    2048   /* visible tiles across all BG layers */
+#define MAX_BG_TILES    4096   /* visible tiles across all BG layers */
 #define MAX_SPRITES     128    /* OAM supports 128 sprites */
 
 /* A decoded 8x8 tile with palette-resolved RGBA colors */

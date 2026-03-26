@@ -255,6 +255,9 @@ static void rasterize_triangle(
 bool soft_renderer_init(SoftRenderer *r, int width, int height)
 {
     memset(r, 0, sizeof(*r));
+    r->clear_r = 20;
+    r->clear_g = 20;
+    r->clear_b = 31;
     init_face_shading();
 
     r->width  = width;
@@ -307,11 +310,12 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
     const int H = r->height;
     const size_t npixels = (size_t)W * (size_t)H;
 
-    /* Clear color buffer to (20, 20, 31, 255). */
+    /* Clear color buffer to clear color. ABGR byte order for RGBA8888 on LE. */
     {
         uint8_t *p = r->color_buf;
+        uint8_t cr = r->clear_r, cg = r->clear_g, cb = r->clear_b;
         for (size_t i = 0; i < npixels; i++) {
-            p[0] = 255; p[1] = 31;  p[2] = 20;  p[3] = 20; /* ABGR byte order */
+            p[0] = 255; p[1] = cb; p[2] = cg; p[3] = cr;
             p += 4;
         }
     }
@@ -328,7 +332,7 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
     if (count <= 0) return;
 
     /* Cap voxel count for real-time performance on CPU */
-    if (count > 50000) count = 50000;
+    if (count > 300000) count = 300000;
 
     /* Combined view * projection matrix. */
     float mvp[16];
@@ -393,6 +397,19 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
 
         if (all_behind) continue;
 
+        /* Screen-space bounding box cull — skip if entirely off-screen */
+        {
+            float smin_x = sv[0].sx, smax_x = sv[0].sx;
+            float smin_y = sv[0].sy, smax_y = sv[0].sy;
+            for (int ci = 1; ci < 8; ci++) {
+                if (sv[ci].sx < smin_x) smin_x = sv[ci].sx;
+                if (sv[ci].sx > smax_x) smax_x = sv[ci].sx;
+                if (sv[ci].sy < smin_y) smin_y = sv[ci].sy;
+                if (sv[ci].sy > smax_y) smax_y = sv[ci].sy;
+            }
+            if (smax_x < 0 || smin_x >= W || smax_y < 0 || smin_y >= H) continue;
+        }
+
         /* Center of the voxel in world space — for back-face culling. */
         float cx = vx + 0.5f;
         float cy = vy + 0.5f;
@@ -411,7 +428,9 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
             float ndotv = face->nx * vdx + face->ny * vdy + face->nz * vdz;
             if (ndotv <= 0.0f) continue;
 
-            /* Skip faces with any vertex behind the near plane. */
+            /* Skip faces if any vertex is behind the near plane.
+             * (Proper near-plane clipping would clip the polygon, but
+             *  vertices with w<=0 produce garbage screen coordinates.) */
             int behind = 0;
             for (int k = 0; k < 4; k++) {
                 if (sv[face->idx[k]].w <= 0.001f) { behind = 1; break; }

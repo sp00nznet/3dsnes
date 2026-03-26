@@ -106,7 +106,8 @@ static void extract_bg_layer(const Ppu *ppu, int layer, ExtractedFrame *frame) {
     int bpp = bit_depths[mode][layer];
     if (bpp == 0) return; /* layer not active in this mode */
 
-    if (!ppu->layer[layer].mainScreenEnabled) return;
+    /* Include layers on main screen OR subscreen (subscreen used for color math blending) */
+    if (!ppu->layer[layer].mainScreenEnabled && !ppu->layer[layer].subScreenEnabled) return;
 
     const BgLayer *bg = &ppu->bgLayer[layer];
     bool big_tiles = bg->bigTiles;
@@ -310,9 +311,9 @@ void ppu_extract_frame(const Ppu *ppu, ExtractedFrame *frame) {
     for (int i = 0; i < 4; i++) {
         frame->bg_hscroll[i] = ppu->bgLayer[i].hScroll;
         frame->bg_vscroll[i] = ppu->bgLayer[i].vScroll;
-        frame->bg_enabled[i] = ppu->layer[i].mainScreenEnabled;
+        frame->bg_enabled[i] = ppu->layer[i].mainScreenEnabled || ppu->layer[i].subScreenEnabled;
     }
-    frame->sprites_enabled = ppu->layer[4].mainScreenEnabled;
+    frame->sprites_enabled = ppu->layer[4].mainScreenEnabled || ppu->layer[4].subScreenEnabled;
 
     /* Extract BG layers */
     for (int layer = 0; layer < 4; layer++) {

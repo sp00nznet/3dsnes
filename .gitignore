@@ -7,7 +7,10 @@ roms/
 .vs/
 CMakeSettings.json
 ext/
+!ext/stb_image_write.h
+!ext/imgui
 *.png
+!docs/*.png
 !screenshot.png
 debug_output.txt
 .claude/

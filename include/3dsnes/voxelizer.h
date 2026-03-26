@@ -35,6 +35,8 @@ typedef struct {
     float sprite_depth;     /* extrusion depth for sprites */
     float pixel_scale;      /* scale factor per pixel (1.0 = 1 unit per pixel) */
     float brightness_depth; /* extra depth from pixel brightness (0=off, 1.0=full) */
+    int bg_skip_layer;      /* layer index whose "sky color" pixels are skipped (-1=none) */
+    uint8_t sky_r, sky_g, sky_b; /* sky color to skip (set at runtime from BG1) */
 } VoxelProfile;
 
 /* Result of voxelizing a frame */
@@ -62,5 +64,11 @@ void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
 
 /* Get the default profile for Zelda: A Link to the Past */
 VoxelProfile voxel_profile_zelda_alttp(void);
+
+/* Get the default profile for Super Mario World */
+VoxelProfile voxel_profile_smw(void);
+
+/* Get a generic Mode 1 profile (reasonable defaults for any game) */
+VoxelProfile voxel_profile_generic(void);
 
 #endif /* VOXELIZER_H */

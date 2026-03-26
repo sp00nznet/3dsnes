@@ -35,22 +35,22 @@
 #include <stdbool.h>
 
 #include <SDL.h>
-#include <glad/glad.h>
 
 #include "snes/snes.h"
 #include "snes/ppu.h"
 #include "snes/input.h"
+#include "zip/zip.h"
 
 #include "3dsnes/ppu_extract.h"
 #include "3dsnes/voxelizer.h"
-#include "3dsnes/renderer.h"
 #include "3dsnes/soft_renderer.h"
 #include "3dsnes/camera.h"
+#include "3dsnes/menu.h"
+#include "stb_image_write.h"
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
 static SDL_Window *g_window = NULL;
-static SDL_GLContext g_gl_ctx = NULL;
 static SDL_Renderer *g_sdl_renderer = NULL;
 static SDL_Texture *g_sdl_texture_3d = NULL;  /* RGBA for software renderer */
 static SDL_Texture *g_sdl_texture_2d = NULL;  /* RGBX for SNES framebuffer */
@@ -60,7 +60,6 @@ static Snes *g_snes = NULL;
 static uint8_t g_pixel_buf[512 * 480 * 4]; /* must be 480 lines for ppu_putPixels */
 static int16_t g_audio_buf[800 * 2]; /* 1 frame @ 48000 Hz / 60 fps, stereo */
 
-static Renderer g_renderer;
 static SoftRenderer g_soft_renderer;
 static bool g_use_software = true;  /* default to software renderer */
 static Camera g_camera;
@@ -69,13 +68,59 @@ static VoxelProfile g_profile;
 static ExtractedFrame g_extracted;
 
 static bool g_running = true;
+static bool g_show_3d = false;
+static bool g_show_overlay = false;
 static bool g_mouse_dragging = false;
 static bool g_mouse_panning = false;
 static int g_mouse_last_x, g_mouse_last_y;
+static bool g_save_requested = false;
+static bool g_load_requested = false;
+static char g_state_path[512] = {0};  /* path for save state file */
+static char g_rom_path_current[512] = {0}; /* currently loaded ROM */
 
 /* ── ROM Loading ─────────────────────────────────────────────────── */
 
+static bool has_ext(const char *name, const char *ext) {
+    int nlen = (int)strlen(name);
+    int elen = (int)strlen(ext);
+    if (nlen < elen) return false;
+    for (int i = 0; i < elen; i++) {
+        char c = name[nlen - elen + i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != ext[i]) return false;
+    }
+    return true;
+}
+
 static uint8_t *load_file(const char *path, int *size) {
+    /* Handle ZIP files — extract first .sfc/.smc/.fig inside */
+    if (has_ext(path, ".zip")) {
+        struct zip_t *zip = zip_open(path, 0, 'r');
+        if (!zip) {
+            fprintf(stderr, "Failed to open ZIP: %s\n", path);
+            return NULL;
+        }
+        int entries = zip_total_entries(zip);
+        uint8_t *data = NULL;
+        for (int i = 0; i < entries; i++) {
+            zip_entry_openbyindex(zip, i);
+            const char *name = zip_entry_name(zip);
+            if (has_ext(name, ".sfc") || has_ext(name, ".smc") || has_ext(name, ".fig")) {
+                printf("Extracting \"%s\" from ZIP\n", name);
+                size_t sz = 0;
+                zip_entry_read(zip, (void **)&data, &sz);
+                *size = (int)sz;
+                zip_entry_close(zip);
+                break;
+            }
+            zip_entry_close(zip);
+        }
+        zip_close(zip);
+        if (!data) fprintf(stderr, "No ROM found inside ZIP: %s\n", path);
+        return data;
+    }
+
+    /* Plain ROM file */
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Failed to open: %s\n", path);
@@ -92,42 +137,160 @@ static uint8_t *load_file(const char *path, int *size) {
 
 /* ── Input Mapping ───────────────────────────────────────────────── */
 
-static void handle_key(SDL_Keycode key, bool pressed) {
-    /* SNES button indices (from LakeSnes input.h) */
-    enum {
-        BTN_B = 0, BTN_Y = 1, BTN_SELECT = 2, BTN_START = 3,
-        BTN_UP = 4, BTN_DOWN = 5, BTN_LEFT = 6, BTN_RIGHT = 7,
-        BTN_A = 8, BTN_X = 9, BTN_L = 10, BTN_R = 11
-    };
+/* Map menu SNES button index to LakeSnes button index */
+static const int menu_to_lakesnes[12] = {
+    /* SNES_UP=0 */ 4, /* SNES_DOWN=1 */ 5, /* SNES_LEFT=2 */ 6, /* SNES_RIGHT=3 */ 7,
+    /* SNES_B=4 */  0, /* SNES_A=5 */    8, /* SNES_Y=6 */    1, /* SNES_X=7 */     9,
+    /* SNES_L=8 */ 10, /* SNES_R=9 */   11, /* SNES_SEL=10 */ 2, /* SNES_START=11 */ 3
+};
 
-    /* Match LakeSnes's exact key mapping */
-    int btn = -1;
-    switch (key) {
-        case SDLK_UP:     btn = BTN_UP; break;
-        case SDLK_DOWN:   btn = BTN_DOWN; break;
-        case SDLK_LEFT:   btn = BTN_LEFT; break;
-        case SDLK_RIGHT:  btn = BTN_RIGHT; break;
-        case SDLK_z:      btn = BTN_B; break;       /* B (like LakeSnes) */
-        case SDLK_x:      btn = BTN_A; break;       /* A (like LakeSnes) */
-        case SDLK_a:      btn = BTN_Y; break;       /* Y (like LakeSnes) */
-        case SDLK_s:      btn = BTN_X; break;       /* X (like LakeSnes) */
-        case SDLK_d:      btn = BTN_L; break;       /* L (like LakeSnes) */
-        case SDLK_c:      btn = BTN_R; break;       /* R (like LakeSnes) */
-        case SDLK_TAB:    btn = BTN_SELECT; break;  /* Select */
-        case SDLK_RETURN: btn = BTN_START; break;   /* Start */
-        case SDLK_SPACE:  btn = BTN_A; break;       /* alternate A/jump */
-        default: break;
-    }
-    if (btn >= 0) {
-        /* Debounce: only send if state actually changed */
-        static uint16_t btn_state = 0;
-        uint16_t mask = 1 << btn;
-        bool currently_pressed = (btn_state & mask) != 0;
-        if (pressed != currently_pressed) {
-            if (pressed) btn_state |= mask; else btn_state &= ~mask;
-            snes_setButtonState(g_snes, 1, btn, pressed);
+static void handle_key(SDL_Keycode key, bool pressed) {
+    SDL_Scancode sc = SDL_GetScancodeFromKey(key);
+    const SDL_Scancode *p1 = menu_get_p1_keys();
+    const SDL_Scancode *p2 = menu_get_p2_keys();
+
+    /* Check player 1 bindings */
+    for (int i = 0; i < 12; i++) {
+        if (sc == p1[i]) {
+            static uint16_t btn_state_p1 = 0;
+            int btn = menu_to_lakesnes[i];
+            uint16_t mask = 1 << btn;
+            bool cur = (btn_state_p1 & mask) != 0;
+            if (pressed != cur) {
+                if (pressed) btn_state_p1 |= mask; else btn_state_p1 &= ~mask;
+                snes_setButtonState(g_snes, 1, btn, pressed);
+            }
+            return;
         }
     }
+
+    /* Check player 2 bindings */
+    for (int i = 0; i < 12; i++) {
+        if (sc == p2[i]) {
+            static uint16_t btn_state_p2 = 0;
+            int btn = menu_to_lakesnes[i];
+            uint16_t mask = 1 << btn;
+            bool cur = (btn_state_p2 & mask) != 0;
+            if (pressed != cur) {
+                if (pressed) btn_state_p2 |= mask; else btn_state_p2 &= ~mask;
+                snes_setButtonState(g_snes, 2, btn, pressed);
+            }
+            return;
+        }
+    }
+}
+
+/* ── Screenshot ──────────────────────────────────────────────────── */
+
+static void take_screenshot(SDL_Renderer *renderer, SDL_Window *window) {
+    static int shot_num = 0;
+    int w, h;
+    SDL_GetRendererOutputSize(renderer, &w, &h);
+
+    uint8_t *pixels = (uint8_t *)malloc(w * h * 4);
+    if (!pixels) return;
+
+    if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_RGBA32, pixels, w * 4) == 0) {
+        char filename[256];
+        snprintf(filename, sizeof(filename), "screenshot_%04d.png", shot_num++);
+        stbi_write_png(filename, w, h, 4, pixels, w * 4);
+        printf("Screenshot saved: %s\n", filename);
+        fflush(stdout);
+        menu_show_toast(filename);
+    }
+    free(pixels);
+}
+
+/* ── Save State ──────────────────────────────────────────────────── */
+
+static void do_save_state(void) {
+    /* Allocate buffer large enough for any SNES state */
+    uint8_t *buf = (uint8_t *)malloc(512 * 1024);
+    if (!buf) return;
+
+    int size = snes_saveState(g_snes, buf);
+    if (size > 0) {
+        FILE *f = fopen(g_state_path, "wb");
+        if (f) {
+            fwrite(buf, 1, size, f);
+            fclose(f);
+            printf("State saved: %s (%d bytes)\n", g_state_path, size);
+            char msg[300]; snprintf(msg, sizeof(msg), "State saved: %s", g_state_path);
+            menu_show_toast(msg);
+        } else {
+            printf("Failed to write state: %s\n", g_state_path);
+            menu_show_toast("Failed to save state!");
+        }
+    }
+    free(buf);
+    fflush(stdout);
+}
+
+static void do_load_state(void) {
+    FILE *f = fopen(g_state_path, "rb");
+    if (!f) {
+        printf("No state file: %s\n", g_state_path);
+        fflush(stdout);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    int size = (int)ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = (uint8_t *)malloc(size);
+    fread(buf, 1, size, f);
+    fclose(f);
+
+    if (snes_loadState(g_snes, buf, size)) {
+        printf("State loaded: %s (%d bytes)\n", g_state_path, size);
+        menu_show_toast("State loaded");
+    } else {
+        printf("Failed to load state: %s\n", g_state_path);
+        menu_show_toast("Failed to load state!");
+    }
+    free(buf);
+    fflush(stdout);
+}
+
+static void set_state_path_from_rom(const char *rom_path) {
+    /* Create state filename from ROM name: "romname.state" */
+    const char *slash = strrchr(rom_path, '/');
+    if (!slash) slash = strrchr(rom_path, '\\');
+    const char *name = slash ? slash + 1 : rom_path;
+
+    snprintf(g_state_path, sizeof(g_state_path), "%s", name);
+    /* Replace extension with .state */
+    char *dot = strrchr(g_state_path, '.');
+    if (dot) *dot = '\0';
+    strcat(g_state_path, ".state");
+}
+
+static bool load_new_rom(const char *path) {
+    int rom_size = 0;
+    uint8_t *rom_data = load_file(path, &rom_size);
+    if (!rom_data) return false;
+
+    snes_reset(g_snes, true);
+    if (!snes_loadRom(g_snes, rom_data, rom_size)) {
+        fprintf(stderr, "Failed to load ROM: %s\n", path);
+        free(rom_data);
+        return false;
+    }
+    printf("ROM loaded: %s (%d bytes)\n", path, rom_size);
+    free(rom_data);
+
+    snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", path);
+    set_state_path_from_rom(path);
+
+    /* Update window title */
+    const char *slash = strrchr(path, '/');
+    if (!slash) slash = strrchr(path, '\\');
+    const char *name = slash ? slash + 1 : path;
+    char title[256];
+    snprintf(title, sizeof(title), "3dSNES — %s", name);
+    SDL_SetWindowTitle(g_window, title);
+
+    fflush(stdout);
+    return true;
 }
 
 /* ── Event Processing ────────────────────────────────────────────── */
@@ -135,21 +298,29 @@ static void handle_key(SDL_Keycode key, bool pressed) {
 static void process_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
+        /* Pass all events to ImGui first */
+        menu_process_event(&ev);
+        bool imgui_wants = menu_wants_input();
+
         switch (ev.type) {
         case SDL_QUIT:
             g_running = false;
             break;
 
         case SDL_KEYDOWN:
-            if (ev.key.repeat) break; /* ignore key repeats */
+            if (ev.key.repeat) break;
+            /* Hotkeys always work (even when menu is active) */
             if (ev.key.keysym.sym == SDLK_ESCAPE) {
                 g_running = false;
             } else if (ev.key.keysym.sym == SDLK_F1) {
-                g_renderer.show_3d = !g_renderer.show_3d;
-            } else if (ev.key.keysym.sym == SDLK_F2) {
-                g_renderer.show_overlay = !g_renderer.show_overlay;
-            } else if (ev.key.keysym.sym == SDLK_F3) {
-                g_renderer.wireframe = !g_renderer.wireframe;
+                g_show_3d = !g_show_3d;
+                menu_set_3d_enabled(g_show_3d);
+            } else if (ev.key.keysym.sym == SDLK_F5) {
+                g_save_requested = true;
+            } else if (ev.key.keysym.sym == SDLK_F7) {
+                g_load_requested = true;
+            } else if (ev.key.keysym.sym == SDLK_F12) {
+                take_screenshot(g_sdl_renderer, g_window);
             } else if (ev.key.keysym.sym == SDLK_1) {
                 camera_set_topdown(&g_camera);
             } else if (ev.key.keysym.sym == SDLK_2) {
@@ -157,22 +328,27 @@ static void process_events(void) {
             } else if (ev.key.keysym.sym == SDLK_3) {
                 camera_set_side(&g_camera);
             }
-            handle_key(ev.key.keysym.sym, true);
+            /* Game input only when ImGui doesn't want it */
+            if (!imgui_wants)
+                handle_key(ev.key.keysym.sym, true);
             break;
 
         case SDL_KEYUP:
-            handle_key(ev.key.keysym.sym, false);
+            if (!imgui_wants)
+                handle_key(ev.key.keysym.sym, false);
             break;
 
         case SDL_MOUSEBUTTONDOWN:
-            if (ev.button.button == SDL_BUTTON_LEFT) {
-                g_mouse_dragging = true;
-                g_mouse_last_x = ev.button.x;
-                g_mouse_last_y = ev.button.y;
-            } else if (ev.button.button == SDL_BUTTON_MIDDLE) {
-                g_mouse_panning = true;
-                g_mouse_last_x = ev.button.x;
-                g_mouse_last_y = ev.button.y;
+            if (!imgui_wants) {
+                if (ev.button.button == SDL_BUTTON_LEFT) {
+                    g_mouse_dragging = true;
+                    g_mouse_last_x = ev.button.x;
+                    g_mouse_last_y = ev.button.y;
+                } else if (ev.button.button == SDL_BUTTON_MIDDLE) {
+                    g_mouse_panning = true;
+                    g_mouse_last_x = ev.button.x;
+                    g_mouse_last_y = ev.button.y;
+                }
             }
             break;
 
@@ -206,7 +382,6 @@ static void process_events(void) {
             if (ev.window.event == SDL_WINDOWEVENT_RESIZED) {
                 int w = ev.window.data1;
                 int h = ev.window.data2;
-                renderer_resize(&g_renderer, w, h);
                 g_camera.aspect = (float)w / (float)h;
                 camera_update(&g_camera);
             }
@@ -231,18 +406,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-
     int win_w = 1280, win_h = 960;
     g_window = SDL_CreateWindow(
-        "3dSNES — Zelda: A Link to the Past",
+        "3dSNES — Super Mario World",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         win_w, win_h,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
     if (!g_window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -250,31 +419,30 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    g_gl_ctx = SDL_GL_CreateContext(g_window);
-    if (!g_gl_ctx) {
-        fprintf(stderr, "SDL_GL_CreateContext failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(g_window);
-        SDL_Quit();
-        return 1;
-    }
-
-    /* Load OpenGL functions */
-    if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
-        fprintf(stderr, "Failed to load OpenGL via glad\n");
-        SDL_GL_DeleteContext(g_gl_ctx);
-        SDL_DestroyWindow(g_window);
-        SDL_Quit();
-        return 1;
-    }
-
-    printf("OpenGL %s, %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
-
-    SDL_GL_SetSwapInterval(0); /* no GL vsync — SDL_Renderer handles it */
-
-    /* Create SDL_Renderer for presentation (this path works with emulation) */
+    /* Use SDL_Renderer for presentation (no GL context — avoids driver conflicts) */
     g_sdl_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, win_w, win_h);
-    g_sdl_texture_2d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBX8888, SDL_TEXTUREACCESS_STREAMING, 512, 480);
+    if (!g_sdl_renderer) {
+        fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(g_window);
+        SDL_Quit();
+        return 1;
+    }
+    {
+        SDL_RendererInfo rinfo;
+        if (SDL_GetRendererInfo(g_sdl_renderer, &rinfo) == 0) {
+            printf("SDL_Renderer: %s\n", rinfo.name);
+        }
+    }
+    fflush(stdout);
+    /* 3D texture at half resolution for performance — SDL_RenderCopy upscales */
+    /* 3D renders at fixed low resolution for CPU performance, SDL upscales */
+    int render_w = 320, render_h = 240;
+    g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, render_w, render_h);
+    /* 2D texture at native SNES resolution — we extract the active 256x224 area */
+    g_sdl_texture_2d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBX8888, SDL_TEXTUREACCESS_STREAMING, 256, 224);
+
+    /* Initialize ImGui menu system */
+    menu_init(g_window, g_sdl_renderer);
 
     /* ── Initialize audio ────────────────────────────────────── */
     SDL_AudioSpec want, have;
@@ -312,12 +480,22 @@ int main(int argc, char *argv[]) {
     }
     printf("ROM loaded: %s (%d bytes)\n", rom_path, rom_size);
     free(rom_data);
+    snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", rom_path);
+    set_state_path_from_rom(rom_path);
+
+    /* Set window title from ROM name */
+    {
+        const char *slash = strrchr(rom_path, '/');
+        if (!slash) slash = strrchr(rom_path, '\\');
+        const char *name = slash ? slash + 1 : rom_path;
+        char title[256];
+        snprintf(title, sizeof(title), "3dSNES — %s", name);
+        SDL_SetWindowTitle(g_window, title);
+    }
 
     /* ── Initialize 3D systems ───────────────────────────────── */
-    if (!renderer_init(&g_renderer, win_w, win_h)) {
-        fprintf(stderr, "Failed to initialize GL renderer\n");
-    }
-    if (!soft_renderer_init(&g_soft_renderer, win_w, win_h)) {
+    /* GL renderer disabled — using software renderer + SDL_Renderer display path */
+    if (!soft_renderer_init(&g_soft_renderer, render_w, render_h)) {
         fprintf(stderr, "Failed to initialize software renderer\n");
         return 1;
     }
@@ -333,46 +511,292 @@ int main(int argc, char *argv[]) {
     camera_update(&g_camera);
 
     voxel_mesh_init(&g_voxel_mesh, 2000000); /* pre-allocate large, never realloc */
-    g_profile = voxel_profile_zelda_alttp();
+
+    /* Pick voxel profile based on ROM filename */
+    {
+        const char *rp = rom_path;
+        /* Find just the filename */
+        const char *slash = strrchr(rp, '/');
+        if (!slash) slash = strrchr(rp, '\\');
+        if (slash) rp = slash + 1;
+
+        if (strstr(rp, "Mario World") || strstr(rp, "mario world") || strstr(rp, "MARIO WORLD")) {
+            g_profile = voxel_profile_smw();
+            printf("Profile: Super Mario World\n");
+        } else if (strstr(rp, "Zelda") || strstr(rp, "zelda") || strstr(rp, "ZELDA")) {
+            g_profile = voxel_profile_zelda_alttp();
+            printf("Profile: Zelda: ALTTP\n");
+        } else {
+            g_profile = voxel_profile_generic();
+            printf("Profile: Generic\n");
+        }
+    }
 
     printf("\n3dSNES ready!\n");
     printf("  F1: Toggle 3D/2D    F2: Toggle overlay    F3: Wireframe\n");
     printf("  1: Top-down    2: Isometric    3: Side view\n");
     printf("  Mouse: Orbit/Pan/Zoom    WASD/Arrows: D-pad\n");
     printf("  Z: A    X: B    Tab: Select    Enter: Start    Esc: Quit\n\n");
+    fflush(stdout);
 
     /* ── Main loop ───────────────────────────────────────────── */
     int wantedSamples = 800;
+    Uint32 frame_start = SDL_GetTicks();
+    const float target_frame_ms = 1000.0f / 60.0f; /* 16.67ms per SNES frame */
+    float emu_accumulator = 0.0f;
 
     while (g_running) {
         /* Process input */
         process_events();
 
-        /* Run one SNES frame */
-        snes_runFrame(g_snes);
+        /* Time-based emulation: run enough SNES frames to keep up with real time.
+         * This decouples emulation speed from render speed — game runs at 60fps
+         * even when 3D rendering is slower. */
+        Uint32 now = SDL_GetTicks();
+        float elapsed = (float)(now - frame_start);
+        frame_start = now;
+        if (elapsed > 100.0f) elapsed = 100.0f; /* cap to avoid spiral of death */
 
-        /* Audio */
-        snes_setSamples(g_snes, g_audio_buf, wantedSamples);
-        if (g_audio_dev > 0) {
-            if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
-                SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
+        emu_accumulator += elapsed;
+        int emu_frames = 0;
+        while (emu_accumulator >= target_frame_ms && emu_frames < 4) {
+            snes_runFrame(g_snes);
+            emu_accumulator -= target_frame_ms;
+            emu_frames++;
+
+            /* Audio for each emu frame */
+            snes_setSamples(g_snes, g_audio_buf, wantedSamples);
+            if (g_audio_dev > 0) {
+                if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
+                    SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
+                }
             }
         }
 
-        /* Copy pixels for 2D overlay */
+        if (emu_frames == 0) {
+            /* Rendering faster than 60fps — run one frame anyway */
+            snes_runFrame(g_snes);
+            snes_setSamples(g_snes, g_audio_buf, wantedSamples);
+            if (g_audio_dev > 0) {
+                if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
+                    SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
+                }
+            }
+        }
+
+        /* Copy pixels for 2D display (from last emu frame) */
         snes_setPixels(g_snes, g_pixel_buf);
 
-        /* Extract PPU state and voxelize (once per render, not per emu frame) */
-        ppu_extract_frame(g_snes->ppu, &g_extracted);
-        voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
+        /* Auto-fallback: Mode 7 can't be voxelized, show 2D instead */
+        bool mode7_active = (g_snes->ppu->mode == 7);
+        bool show_3d_this_frame = g_show_3d && !mode7_active;
+
+        /* Only extract/voxelize when in 3D mode and not Mode 7 */
+        if (show_3d_this_frame) {
+            ppu_extract_frame(g_snes->ppu, &g_extracted);
+            voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
+        }
+
+        /* Set renderer clear color from BG1 (background layer) most common color */
+        if (show_3d_this_frame && g_extracted.bg_enabled[1] && g_extracted.brightness > 0) {
+            /* Sample BG1 pixels and find the most common color (quantized to 5-bit) */
+            typedef struct { uint16_t key; int count; } ColorBucket;
+            ColorBucket buckets[32]; /* small hash table */
+            int nbuckets = 0;
+            int best_count = 0;
+            uint8_t best_r = 0, best_g = 0, best_b = 0;
+
+            for (int i = 0; i < g_extracted.bg_tile_count; i++) {
+                if (g_extracted.bg_tiles[i].bg_layer != 1) continue;
+                /* Sample 4 pixels per tile (corners) for speed */
+                for (int s = 0; s < 4; s++) {
+                    int sr = (s & 2) ? 7 : 0;
+                    int sc = (s & 1) ? 7 : 0;
+                    const uint8_t *px = g_extracted.bg_tiles[i].decoded.pixels[sr][sc];
+                    if (px[3] == 0 || px[0] + px[1] + px[2] < 12) continue;
+                    /* Quantize to 5-bit per channel for bucketing */
+                    uint16_t key = ((px[0] >> 3) << 10) | ((px[1] >> 3) << 5) | (px[2] >> 3);
+                    /* Find or insert in bucket list */
+                    int found = -1;
+                    for (int b = 0; b < nbuckets; b++) {
+                        if (buckets[b].key == key) { found = b; break; }
+                    }
+                    if (found >= 0) {
+                        buckets[found].count++;
+                        if (buckets[found].count > best_count) {
+                            best_count = buckets[found].count;
+                            best_r = px[0]; best_g = px[1]; best_b = px[2];
+                        }
+                    } else if (nbuckets < 32) {
+                        buckets[nbuckets].key = key;
+                        buckets[nbuckets].count = 1;
+                        if (1 > best_count) {
+                            best_count = 1;
+                            best_r = px[0]; best_g = px[1]; best_b = px[2];
+                        }
+                        nbuckets++;
+                    }
+                }
+            }
+
+            if (best_count > 0) {
+                float br = g_extracted.brightness / 15.0f;
+                g_soft_renderer.clear_r = (uint8_t)(best_r * br);
+                g_soft_renderer.clear_g = (uint8_t)(best_g * br);
+                g_soft_renderer.clear_b = (uint8_t)(best_b * br);
+                g_profile.sky_r = best_r;
+                g_profile.sky_g = best_g;
+                g_profile.sky_b = best_b;
+            }
+        }
+
+        /* ── DIAGNOSTIC: one-time dump at frame 60 ────────────── */
+        {
+            static int diag_frame = 0;
+            diag_frame++;
+            if (diag_frame == 300 || diag_frame == 600) {
+                printf("\n=== DIAGNOSTIC DUMP (frame %d) ===\n", diag_frame);
+                printf("PPU mode: %d, brightness: %d\n", g_extracted.mode, g_extracted.brightness);
+
+                /* Per-layer tile count and non-transparent pixel count */
+                int layer_tiles[4] = {0};
+                int layer_opaque[4] = {0};
+                for (int i = 0; i < g_extracted.bg_tile_count; i++) {
+                    int l = g_extracted.bg_tiles[i].bg_layer;
+                    if (l < 0 || l > 3) continue;
+                    layer_tiles[l]++;
+                    for (int r = 0; r < 8; r++)
+                        for (int c = 0; c < 8; c++)
+                            if (g_extracted.bg_tiles[i].decoded.pixels[r][c][3] > 0)
+                                layer_opaque[l]++;
+                }
+                for (int l = 0; l < 4; l++) {
+                    printf("BG%d: enabled=%d, tiles=%d, opaque_pixels=%d, scroll=(%d,%d)\n",
+                           l, g_extracted.bg_enabled[l], layer_tiles[l], layer_opaque[l],
+                           g_extracted.bg_hscroll[l], g_extracted.bg_vscroll[l]);
+                }
+                printf("Sprites: enabled=%d, count=%d\n",
+                       g_extracted.sprites_enabled, g_extracted.sprite_count);
+                printf("Total voxels: %d\n", g_voxel_mesh.count);
+
+                /* Sample first COLORFUL (not black) pixel from each layer */
+                for (int l = 0; l < 4; l++) {
+                    int samples = 0;
+                    for (int i = 0; i < g_extracted.bg_tile_count && samples < 3; i++) {
+                        if (g_extracted.bg_tiles[i].bg_layer != l) continue;
+                        const ExtractedBgTile *bt = &g_extracted.bg_tiles[i];
+                        for (int r = 0; r < 8; r++) {
+                            for (int c = 0; c < 8; c++) {
+                                const uint8_t *px = bt->decoded.pixels[r][c];
+                                if (px[3] > 0 && (px[0] + px[1] + px[2]) > 30) {
+                                    printf("  BG%d: tile=%d pal=%d pos=(%d,%d) "
+                                           "px[%d][%d]=RGBA(%d,%d,%d,%d)\n",
+                                           l, bt->tile_num, bt->palette_num,
+                                           bt->screen_x, bt->screen_y,
+                                           r, c, px[0], px[1], px[2], px[3]);
+                                    samples++;
+                                    goto next_sample;
+                                }
+                            }
+                        }
+                        next_sample:;
+                    }
+                    if (samples == 0 && layer_tiles[l] > 0)
+                        printf("  BG%d: %d tiles but NO colorful pixels found!\n", l, layer_tiles[l]);
+                }
+                /* Count black vs colorful opaque pixels on BG0 */
+                {
+                    int black = 0, colored = 0;
+                    for (int i = 0; i < g_extracted.bg_tile_count; i++) {
+                        if (g_extracted.bg_tiles[i].bg_layer != 0) continue;
+                        for (int r = 0; r < 8; r++)
+                            for (int c = 0; c < 8; c++) {
+                                const uint8_t *px = g_extracted.bg_tiles[i].decoded.pixels[r][c];
+                                if (px[3] == 0) continue;
+                                if (px[0] + px[1] + px[2] < 12) black++;
+                                else colored++;
+                            }
+                    }
+                    printf("BG0 pixel breakdown: %d colored, %d black\n", colored, black);
+                }
+
+                /* Compare 2D pixel at (128,112) with extracted tile at same position */
+                {
+                    int sx = 128, sy = 112;
+                    /* 2D pixel from PPU output (BGRX byte order on LE for pixelFormatRGBX) */
+                    int ppu_idx = (sy * 2 + 16) * 512 * 4 + sx * 2 * 4;
+                    printf("2D pixel at (%d,%d): BGRX(%d,%d,%d,%d)\n",
+                           sx, sy,
+                           g_pixel_buf[ppu_idx+0], g_pixel_buf[ppu_idx+1],
+                           g_pixel_buf[ppu_idx+2], g_pixel_buf[ppu_idx+3]);
+                }
+
+                printf("=== END DIAGNOSTIC ===\n\n");
+                fflush(stdout);
+            }
+        }
+
+        /* ── FPS tracking ──────────────────────────────────────── */
+        {
+            static Uint32 fps_last = 0;
+            static int fps_frames = 0;
+            fps_frames++;
+            Uint32 now = SDL_GetTicks();
+            if (now - fps_last >= 1000) {
+                menu_set_fps((float)fps_frames * 1000.0f / (float)(now - fps_last));
+                fps_frames = 0;
+                fps_last = now;
+            }
+        }
+
+        /* Sync state with menu */
+        g_show_3d = menu_get_3d_enabled();
+        menu_set_voxel_count(g_voxel_mesh.count);
+
+        /* Handle menu view presets */
+        switch (menu_get_view_preset()) {
+            case 1: camera_set_topdown(&g_camera); break;
+            case 2: camera_set_isometric(&g_camera); break;
+            case 3: camera_set_side(&g_camera); break;
+        }
+
+        /* Handle scale change */
+        if (menu_get_scale_changed()) {
+            int s = menu_get_scale_factor();
+            SDL_SetWindowSize(g_window, 256 * s, 224 * s);
+            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+
+        /* Handle quit */
+        if (menu_quit_requested()) {
+            g_running = false;
+        }
+
+        /* Handle save/load state (from menu or hotkey) */
+        if (menu_save_requested() || g_save_requested) {
+            do_save_state();
+            menu_clear_save_request();
+            g_save_requested = false;
+        }
+        if (menu_load_requested() || g_load_requested) {
+            do_load_state();
+            menu_clear_load_request();
+            g_load_requested = false;
+        }
+
+        /* Handle ROM loading from File -> Load ROM */
+        {
+            char *new_rom = menu_get_rom_path();
+            if (new_rom) {
+                load_new_rom(new_rom);
+                menu_clear_rom_path();
+            }
+        }
 
         /* Render and display */
         SDL_RenderClear(g_sdl_renderer);
 
-        if (g_renderer.show_3d) {
-            /* Software 3D renderer */
-            static int dbg = 0;
-            if (++dbg == 60) { dbg = 0; printf("SW render: %d voxels\n", g_voxel_mesh.count); }
+        if (show_3d_this_frame) {
             soft_renderer_draw(&g_soft_renderer, &g_camera,
                                g_voxel_mesh.instances, g_voxel_mesh.count);
             const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
@@ -380,28 +804,44 @@ int main(int argc, char *argv[]) {
                               g_soft_renderer.width * 4);
             SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_3d, NULL, NULL);
         } else {
-            /* 2D SNES framebuffer */
-            void *tex_pixels; int tex_pitch;
-            SDL_LockTexture(g_sdl_texture_2d, NULL, &tex_pixels, &tex_pitch);
-            snes_setPixels(g_snes, (uint8_t*)tex_pixels);
-            SDL_UnlockTexture(g_sdl_texture_2d);
+            /* 2D SNES framebuffer — extract 256x224 active area from 512x480 PPU output.
+             * PPU buffer: 512px wide (doubled), 480 lines. Active starts at line 16.
+             * Each pixel is doubled horizontally (512 → 256 real pixels). */
+            static uint8_t active_buf[256 * 224 * 4];
+            for (int y = 0; y < 224; y++) {
+                const uint8_t *src = g_pixel_buf + (y * 2 + 16) * 512 * 4;
+                uint8_t *dst = active_buf + y * 256 * 4;
+                for (int x = 0; x < 256; x++) {
+                    /* Take every other pixel (skip the doubled pixel) */
+                    memcpy(dst + x * 4, src + x * 2 * 4, 4);
+                }
+            }
+            SDL_UpdateTexture(g_sdl_texture_2d, NULL, active_buf, 256 * 4);
             SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_2d, NULL, NULL);
         }
 
+        /* Draw ImGui menu bar on top of everything */
+        menu_draw();
+
         SDL_RenderPresent(g_sdl_renderer);
+
+        /* Screenshot after present so menu is captured too */
+        if (menu_screenshot_requested()) {
+            take_screenshot(g_sdl_renderer, g_window);
+            menu_clear_screenshot_request();
+        }
     }
 
     /* ── Cleanup ─────────────────────────────────────────────── */
+    menu_shutdown();
     voxel_mesh_free(&g_voxel_mesh);
     soft_renderer_shutdown(&g_soft_renderer);
-    renderer_shutdown(&g_renderer);
     snes_free(g_snes);
 
     if (g_audio_dev > 0) SDL_CloseAudioDevice(g_audio_dev);
     SDL_DestroyTexture(g_sdl_texture_3d);
     SDL_DestroyTexture(g_sdl_texture_2d);
     SDL_DestroyRenderer(g_sdl_renderer);
-    SDL_GL_DeleteContext(g_gl_ctx);
     SDL_DestroyWindow(g_window);
     SDL_Quit();
 

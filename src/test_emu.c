@@ -9,6 +9,7 @@
 #include <glad/glad.h>
 #include "snes/snes.h"
 #include "snes/ppu.h"
+#include "zip/zip.h"
 #include "3dsnes/ppu_extract.h"
 #include "3dsnes/voxelizer.h"
 #include "3dsnes/renderer.h"
@@ -79,9 +80,32 @@ int main(int argc, char *argv[]) {
 
     snes = snes_init();
 
-    FILE *f = fopen(argv[1], "rb");
-    fseek(f, 0, SEEK_END); int sz = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t *rom = malloc(sz); fread(rom, 1, sz, f); fclose(f);
+    int sz = 0;
+    uint8_t *rom = NULL;
+    const char *path = argv[1];
+    int plen = strlen(path);
+    if(plen > 4 && (_stricmp(path+plen-4, ".zip") == 0)) {
+        struct zip_t *zip = zip_open(path, 0, 'r');
+        int entries = zip_total_entries(zip);
+        for(int i = 0; i < entries; i++) {
+            zip_entry_openbyindex(zip, i);
+            const char *name = zip_entry_name(zip);
+            int nlen = strlen(name);
+            if(nlen > 4 && (_stricmp(name+nlen-4, ".sfc") == 0 || _stricmp(name+nlen-4, ".smc") == 0)) {
+                size_t s = 0;
+                zip_entry_read(zip, (void**)&rom, &s);
+                sz = (int)s;
+                zip_entry_close(zip);
+                break;
+            }
+            zip_entry_close(zip);
+        }
+        zip_close(zip);
+    } else {
+        FILE *f = fopen(path, "rb");
+        fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+        rom = malloc(sz); fread(rom, 1, sz, f); fclose(f);
+    }
 
     snes_setPixelFormat(snes, pixelFormatRGBX);
     if(!snes_loadRom(snes, rom, sz)) { printf("Failed\n"); return 1; }
@@ -117,11 +141,10 @@ int main(int argc, char *argv[]) {
         if(audioDev && SDL_GetQueuedAudioSize(audioDev) <= wantedSamples * 4 * 6)
             SDL_QueueAudio(audioDev, audioBuffer, wantedSamples * 4);
 
-        // video
-        void *pixels; int pitch;
-        SDL_LockTexture(texture, NULL, &pixels, &pitch);
-        snes_setPixels(snes, (uint8_t*)pixels);
-        SDL_UnlockTexture(texture);
+        // video — use UpdateTexture (LockTexture broken on some NVIDIA drivers)
+        static uint8_t pixbuf[512 * 480 * 4];
+        snes_setPixels(snes, pixbuf);
+        SDL_UpdateTexture(texture, NULL, pixbuf, 512 * 4);
 
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, texture, NULL, NULL);

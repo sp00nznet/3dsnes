@@ -19,6 +19,7 @@ typedef struct {
     float   *depth_buf;   /* Z-buffer (width * height floats, 1.0 = far) */
     int      width;
     int      height;
+    uint8_t  clear_r, clear_g, clear_b; /* background clear color */
 } SoftRenderer;
 
 /* Initialize with output dimensions. Returns false on allocation failure. */
