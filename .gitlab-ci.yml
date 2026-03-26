@@ -9,13 +9,23 @@ build-windows:
   tags:
     - windows
   script:
-    # Probe what's available
-    - Write-Host "=== Probing ==="
-    - Get-Command choco -ErrorAction SilentlyContinue
-    - Get-Command winget -ErrorAction SilentlyContinue
-    - Get-Command scoop -ErrorAction SilentlyContinue
-    - Get-ChildItem "C:\Program Files" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
-    - Get-ChildItem "C:\Program Files (x86)" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
-    - Get-ChildItem "C:\" -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
-    - $env:PATH -split ';' | ForEach-Object { Write-Host $_ }
-    - Write-Host "=== Done ==="
+    # Install build tools via chocolatey
+    - choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y --no-progress
+    - choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y --no-progress
+    - refreshenv
+    # Refresh PATH for this session
+    - $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
+    # Clone imgui submodule
+    - if (!(Test-Path ext\imgui)) { git clone --depth 1 https://github.com/ocornut/imgui.git ext/imgui }
+    # Install SDL2 via vcpkg
+    - if (!(Test-Path C:\vcpkg\vcpkg.exe)) { git clone https://github.com/microsoft/vcpkg.git C:\vcpkg; & C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics }
+    - C:\vcpkg\vcpkg install sdl2:x64-windows
+    # Build
+    - cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
+    - cmake --build build --config Release
+    - Get-ChildItem build\Release\3dsnes.exe
+  artifacts:
+    paths:
+      - build/Release/3dsnes.exe
+      - build/Release/*.dll
+    expire_in: 1 week
