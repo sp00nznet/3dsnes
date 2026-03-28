@@ -162,14 +162,96 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
                 int extra = (int)(bright * bright_scale * base_depth + 0.5f);
                 int total_depth = base_depth + extra;
 
+                /* Apply per-layer alpha multiplier */
+                uint8_t final_alpha = (uint8_t)(px[3] * profile->layer_alpha[layer]);
+
                 /* Extrude upward (Y+) — same color throughout for clean sides */
                 for (int d = 0; d < total_depth; d++) {
                     float wy = y_base + d;
-                    mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], px[3]);
+                    mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
                 }
             }
         }
     }
+}
+
+/* ---- Union-Find for sprite grouping ---- */
+static int uf_find(int *parent, int i) {
+    while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+}
+static void uf_union(int *parent, int *rank, int a, int b) {
+    a = uf_find(parent, a); b = uf_find(parent, b);
+    if (a == b) return;
+    if (rank[a] < rank[b]) { int t = a; a = b; b = t; }
+    parent[b] = a;
+    if (rank[a] == rank[b]) rank[a]++;
+}
+
+static int group_sprites(const ExtractedSprite *sprites, int count, int gap,
+                         SpriteGroup *groups, int max_groups) {
+    if (count <= 0) return 0;
+    if (count > 128) count = 128; /* safety cap */
+
+    int parent[128], rank_arr[128];
+    for (int i = 0; i < count; i++) { parent[i] = i; rank_arr[i] = 0; }
+
+    /* Union sprites that overlap or are within gap pixels */
+    for (int i = 0; i < count; i++) {
+        int ax0 = sprites[i].screen_x;
+        int ay0 = sprites[i].screen_y;
+        int ax1 = ax0 + sprites[i].width;
+        int ay1 = ay0 + sprites[i].height;
+
+        for (int j = i + 1; j < count; j++) {
+            int bx0 = sprites[j].screen_x;
+            int by0 = sprites[j].screen_y;
+            int bx1 = bx0 + sprites[j].width;
+            int by1 = by0 + sprites[j].height;
+
+            /* Check overlap with gap tolerance */
+            if (ax0 - gap <= bx1 && ax1 + gap >= bx0 &&
+                ay0 - gap <= by1 && ay1 + gap >= by0) {
+                /* Also check same priority for grouping */
+                if (sprites[i].priority == sprites[j].priority) {
+                    uf_union(parent, rank_arr, i, j);
+                }
+            }
+        }
+    }
+
+    /* Collect groups */
+    int ngroups = 0;
+    int group_id[128];
+    memset(group_id, -1, sizeof(group_id));
+
+    for (int i = 0; i < count; i++) {
+        int root = uf_find(parent, i);
+        if (group_id[root] < 0) {
+            if (ngroups >= max_groups) break;
+            group_id[root] = ngroups;
+            SpriteGroup *g = &groups[ngroups];
+            g->count = 0;
+            g->min_x = 9999; g->min_y = 9999;
+            g->max_x = -9999; g->max_y = -9999;
+            ngroups++;
+        }
+        int gi = group_id[root];
+        SpriteGroup *g = &groups[gi];
+        if (g->count < 64) {
+            g->indices[g->count++] = i;
+        }
+        int x0 = sprites[i].screen_x;
+        int y0 = sprites[i].screen_y;
+        int x1 = x0 + sprites[i].width;
+        int y1 = y0 + sprites[i].height;
+        if (x0 < g->min_x) g->min_x = x0;
+        if (y0 < g->min_y) g->min_y = y0;
+        if (x1 > g->max_x) g->max_x = x1;
+        if (y1 > g->max_y) g->max_y = y1;
+    }
+
+    return ngroups;
 }
 
 /* Voxelize sprites with uniform depth (no brightness variation — keeps sprites solid) */
@@ -187,32 +269,87 @@ static void voxelize_sprites(const ExtractedFrame *frame,
 
     float bright_scale = profile->brightness_depth;
 
-    for (int i = 0; i < frame->sprite_count; i++) {
-        const ExtractedSprite *sp = &frame->sprites[i];
+    if (profile->sprite_grouping) {
+        /* ---- Grouped sprite rendering ---- */
+        SpriteGroup groups[64];
+        int ngroups = group_sprites(frame->sprites, frame->sprite_count,
+                                    profile->group_gap, groups, 64);
 
-        /* All sprites at same base height — priority gives slight lift */
-        float y_off = y_base + sp->priority * 1.5f;
+        for (int gi = 0; gi < ngroups; gi++) {
+            SpriteGroup *grp = &groups[gi];
 
-        for (int row = 0; row < sp->height && row < 64; row++) {
-            for (int col = 0; col < sp->width && col < 64; col++) {
-                const uint8_t *px = sp->pixels[row][col];
-                if (px[3] == 0) continue;
+            /* Find max priority in group for shared Y base */
+            int max_prio = 0;
+            for (int si = 0; si < grp->count; si++) {
+                int idx = grp->indices[si];
+                if (frame->sprites[idx].priority > max_prio)
+                    max_prio = frame->sprites[idx].priority;
+            }
+            float y_off = y_base + max_prio * 1.5f;
 
-                int sx = sp->screen_x + col;
-                int sy = sp->screen_y + row;
-                if (sx < 0 || sx >= 256 || sy < 0 || sy >= 224) continue;
+            /* Voxelize all sprites in group with shared Y base */
+            for (int si = 0; si < grp->count; si++) {
+                int idx = grp->indices[si];
+                const ExtractedSprite *sp = &frame->sprites[idx];
 
-                float wx = sx * scale;
-                float wz = sy * scale;
+                for (int row = 0; row < sp->height && row < 64; row++) {
+                    for (int col = 0; col < sp->width && col < 64; col++) {
+                        const uint8_t *px = sp->pixels[row][col];
+                        if (px[3] == 0) continue;
 
-                /* Brightness heightmap on sprites too — faces/highlights pop out */
-                float bright = pixel_brightness(px[0], px[1], px[2]);
-                int extra = (int)(bright * bright_scale * total_depth * 0.5f + 0.5f);
-                int sprite_h = total_depth + extra;
+                        int sx = sp->screen_x + col;
+                        int sy = sp->screen_y + row;
+                        if (sx < 0 || sx >= 256 || sy < 0 || sy >= 224) continue;
 
-                for (int d = 0; d < sprite_h; d++) {
-                    float wy = y_off + d;
-                    mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], px[3]);
+                        float wx = sx * scale;
+                        float wz = sy * scale;
+
+                        float bright = pixel_brightness(px[0], px[1], px[2]);
+                        int extra = (int)(bright * bright_scale * total_depth * 0.5f + 0.5f);
+                        int sprite_h = total_depth + extra;
+
+                        uint8_t final_alpha = (uint8_t)(px[3] * profile->sprite_alpha);
+
+                        for (int d = 0; d < sprite_h; d++) {
+                            float wy = y_off + d;
+                            mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        /* ---- Non-grouped sprite rendering (original code) ---- */
+        for (int i = 0; i < frame->sprite_count; i++) {
+            const ExtractedSprite *sp = &frame->sprites[i];
+
+            /* All sprites at same base height -- priority gives slight lift */
+            float y_off = y_base + sp->priority * 1.5f;
+
+            for (int row = 0; row < sp->height && row < 64; row++) {
+                for (int col = 0; col < sp->width && col < 64; col++) {
+                    const uint8_t *px = sp->pixels[row][col];
+                    if (px[3] == 0) continue;
+
+                    int sx = sp->screen_x + col;
+                    int sy = sp->screen_y + row;
+                    if (sx < 0 || sx >= 256 || sy < 0 || sy >= 224) continue;
+
+                    float wx = sx * scale;
+                    float wz = sy * scale;
+
+                    /* Apply sprite alpha multiplier */
+                    uint8_t final_alpha = (uint8_t)(px[3] * profile->sprite_alpha);
+
+                    /* Brightness heightmap on sprites too -- faces/highlights pop out */
+                    float bright = pixel_brightness(px[0], px[1], px[2]);
+                    int extra = (int)(bright * bright_scale * total_depth * 0.5f + 0.5f);
+                    int sprite_h = total_depth + extra;
+
+                    for (int d = 0; d < sprite_h; d++) {
+                        float wy = y_off + d;
+                        mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
+                    }
                 }
             }
         }
@@ -267,6 +404,23 @@ VoxelProfile voxel_profile_zelda_alttp(void) {
     p.brightness_depth = 1.5f;
     p.bg_skip_layer = -1;
 
+    p.light_dir[0] = 0.3f; p.light_dir[1] = 0.8f; p.light_dir[2] = 0.5f;
+    p.ambient = 0.35f;
+    p.diffuse = 0.65f;
+    p.layer_alpha[0] = 1.0f; p.layer_alpha[1] = 1.0f;
+    p.layer_alpha[2] = 1.0f; p.layer_alpha[3] = 1.0f;
+    p.sprite_alpha = 1.0f;
+
+    p.sky_type = 0;
+    p.sky_top[0] = 40; p.sky_top[1] = 40; p.sky_top[2] = 80;
+    p.sky_bot[0] = 10; p.sky_bot[1] = 10; p.sky_bot[2] = 20;
+
+    p.shadows_enabled = false;
+    p.shadow_opacity = 0.5f;
+    p.shadow_y = 0.0f;
+    p.sprite_grouping = false;
+    p.group_gap = 1;
+
     return p;
 }
 
@@ -302,6 +456,23 @@ VoxelProfile voxel_profile_smw(void) {
     p.bg_skip_layer = 1;        /* skip BG1 sky-colored pixels */
     p.sky_r = p.sky_g = p.sky_b = 0; /* set at runtime */
 
+    p.light_dir[0] = 0.3f; p.light_dir[1] = 0.8f; p.light_dir[2] = 0.5f;
+    p.ambient = 0.35f;
+    p.diffuse = 0.65f;
+    p.layer_alpha[0] = 1.0f; p.layer_alpha[1] = 1.0f;
+    p.layer_alpha[2] = 1.0f; p.layer_alpha[3] = 1.0f;
+    p.sprite_alpha = 1.0f;
+
+    p.sky_type = 0;
+    p.sky_top[0] = 40; p.sky_top[1] = 40; p.sky_top[2] = 80;
+    p.sky_bot[0] = 10; p.sky_bot[1] = 10; p.sky_bot[2] = 20;
+
+    p.shadows_enabled = false;
+    p.shadow_opacity = 0.5f;
+    p.shadow_y = 0.0f;
+    p.sprite_grouping = false;
+    p.group_gap = 1;
+
     return p;
 }
 
@@ -323,6 +494,23 @@ VoxelProfile voxel_profile_generic(void) {
     p.pixel_scale = 1.0f;
     p.brightness_depth = 1.5f; /* strong relief effect */
     p.bg_skip_layer = -1;
+
+    p.light_dir[0] = 0.3f; p.light_dir[1] = 0.8f; p.light_dir[2] = 0.5f;
+    p.ambient = 0.35f;
+    p.diffuse = 0.65f;
+    p.layer_alpha[0] = 1.0f; p.layer_alpha[1] = 1.0f;
+    p.layer_alpha[2] = 1.0f; p.layer_alpha[3] = 1.0f;
+    p.sprite_alpha = 1.0f;
+
+    p.sky_type = 0;
+    p.sky_top[0] = 40; p.sky_top[1] = 40; p.sky_top[2] = 80;
+    p.sky_bot[0] = 10; p.sky_bot[1] = 10; p.sky_bot[2] = 20;
+
+    p.shadows_enabled = false;
+    p.shadow_opacity = 0.5f;
+    p.shadow_y = 0.0f;
+    p.sprite_grouping = false;
+    p.group_gap = 1;
 
     return p;
 }

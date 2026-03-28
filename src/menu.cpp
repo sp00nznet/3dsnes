@@ -83,6 +83,9 @@ static struct {
     bool     snes_mouse_enabled;
     int      snes_mouse_port;  /* 1 or 2 */
 
+    /* Rendering */
+    bool     fxaa_enabled;
+
     /* Toast */
     char     toast_msg[256];
     Uint32   toast_start;  /* SDL_GetTicks when toast was triggered */
@@ -407,6 +410,79 @@ static void draw_scene_editor(void) {
         if (ImGui::Button("Show All Layers")) {
             g_visible_layers = 0x1F;
         }
+
+        ImGui::Spacing();
+
+        /* == Lighting == */
+        if (ImGui::CollapsingHeader("Lighting")) {
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat3("Light Dir", p->light_dir, -1.0f, 1.0f, "%.2f"))
+                g_editor_dirty = true;
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("Ambient", &p->ambient, 0.0f, 1.0f, "%.2f"))
+                g_editor_dirty = true;
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("Diffuse", &p->diffuse, 0.0f, 1.0f, "%.2f"))
+                g_editor_dirty = true;
+        }
+
+        /* == Shadows == */
+        if (ImGui::CollapsingHeader("Shadows")) {
+            if (ImGui::Checkbox("Enable Shadows", &p->shadows_enabled))
+                g_editor_dirty = true;
+            if (p->shadows_enabled) {
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Shadow Opacity", &p->shadow_opacity, 0.0f, 1.0f, "%.2f"))
+                    g_editor_dirty = true;
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Ground Y", &p->shadow_y, -10.0f, 10.0f, "%.1f"))
+                    g_editor_dirty = true;
+            }
+        }
+
+        /* == Transparency == */
+        if (ImGui::CollapsingHeader("Transparency")) {
+            for (int i = 0; i < 4; i++) {
+                char label[32]; snprintf(label, sizeof(label), "BG %d Alpha", i);
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat(label, &p->layer_alpha[i], 0.0f, 1.0f, "%.2f"))
+                    g_editor_dirty = true;
+            }
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("Sprite Alpha", &p->sprite_alpha, 0.0f, 1.0f, "%.2f"))
+                g_editor_dirty = true;
+        }
+
+        /* == Sprite Grouping == */
+        if (ImGui::CollapsingHeader("Sprite Grouping")) {
+            if (ImGui::Checkbox("Enable Grouping", &p->sprite_grouping))
+                g_editor_dirty = true;
+            if (p->sprite_grouping) {
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderInt("Gap Tolerance", &p->group_gap, 0, 8))
+                    g_editor_dirty = true;
+            }
+        }
+
+        /* == Sky / Background == */
+        if (ImGui::CollapsingHeader("Sky")) {
+            const char *sky_items[] = { "Solid Color", "Gradient" };
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::Combo("Sky Type", &p->sky_type, sky_items, 2))
+                g_editor_dirty = true;
+            if (p->sky_type == 1) {
+                float top[3] = { p->sky_top[0]/255.0f, p->sky_top[1]/255.0f, p->sky_top[2]/255.0f };
+                float bot[3] = { p->sky_bot[0]/255.0f, p->sky_bot[1]/255.0f, p->sky_bot[2]/255.0f };
+                if (ImGui::ColorEdit3("Top Color", top)) {
+                    p->sky_top[0] = (uint8_t)(top[0]*255); p->sky_top[1] = (uint8_t)(top[1]*255); p->sky_top[2] = (uint8_t)(top[2]*255);
+                    g_editor_dirty = true;
+                }
+                if (ImGui::ColorEdit3("Bottom Color", bot)) {
+                    p->sky_bot[0] = (uint8_t)(bot[0]*255); p->sky_bot[1] = (uint8_t)(bot[1]*255); p->sky_bot[2] = (uint8_t)(bot[2]*255);
+                    g_editor_dirty = true;
+                }
+            }
+        }
     }
     ImGui::End();
 }
@@ -532,6 +608,7 @@ static void draw_menu_bar(void) {
                 ImGui::EndMenu();
             }
             ImGui::Separator();
+            if (ImGui::MenuItem("FXAA", NULL, g_menu.fxaa_enabled)) { g_menu.fxaa_enabled = !g_menu.fxaa_enabled; }
             if (ImGui::MenuItem("V-Sync", NULL, g_menu.vsync)) { g_menu.vsync = !g_menu.vsync; }
             if (ImGui::MenuItem("Show FPS", NULL, g_menu.show_fps)) { g_menu.show_fps = !g_menu.show_fps; }
             ImGui::EndMenu();
@@ -723,6 +800,7 @@ extern "C" const SDL_Scancode *menu_get_p1_keys(void) { return g_p1_keys; }
 extern "C" const SDL_Scancode *menu_get_p2_keys(void) { return g_p2_keys; }
 extern "C" bool menu_get_snes_mouse_enabled(void) { return g_menu.snes_mouse_enabled; }
 extern "C" int  menu_get_snes_mouse_port(void)    { return g_menu.snes_mouse_port; }
+extern "C" bool menu_get_fxaa_enabled(void)        { return g_menu.fxaa_enabled; }
 extern "C" void menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name) {
     g_editor_profile = profile;
     snprintf(g_editor_profile_path, sizeof(g_editor_profile_path), "%s", path ? path : "");

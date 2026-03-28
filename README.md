@@ -2,7 +2,7 @@
 
 **A free, open-source 3D voxel renderer for SNES games.**
 
-Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/LakeSnes)) and converts the 2D tile/sprite output into 3D voxel scenes in real-time. Inspired by [3dSen](https://store.steampowered.com/app/1147940/3dSen_PC/) (NES) — this is the SNES equivalent, and it's free.
+Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/LakeSnes)) and converts the 2D tile/sprite output into 3D voxel scenes in real-time. Inspired by [3dSen](https://store.steampowered.com/app/1147940/3dSen_PC/) (NES) — this is the SNES equivalent, and it's free.
 
 ## Screenshots
 
@@ -32,22 +32,28 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 
 ### 3D Rendering
 - Real-time voxel rendering of SNES tile/sprite layers
+- Configurable directional lighting with adjustable angle, ambient, and diffuse
+- Ground-plane shadow projection along the light direction
+- Per-layer and per-sprite alpha transparency with back-to-front sorted blending
+- Sprite grouping — adjacent multi-tile sprites merge into single coherent 3D objects
+- FXAA anti-aliasing post-processing
+- Gradient skybox backgrounds (configurable top/bottom colors)
 - Toggle between 3D and 2D views (F1)
 - Automatic Mode 7 detection with seamless 2D fallback
 - Orbit camera with mouse drag, zoom (scroll wheel), and pan (middle drag)
 - Preset camera views: top-down (1), isometric (2), side (3)
-- Per-layer depth, height, and visibility controls via Scene Editor
-- Sky color auto-detection for scene background
 - Time-decoupled emulation — game runs at 60fps regardless of render speed
 
 ### Per-Game Profiles
 - Voxel profiles with per-BG-layer depth, height, and extrusion settings
+- Lighting, shadow, transparency, sky, and sprite grouping settings per game
 - Auto-detection by ROM checksum and internal name
-- Built-in Scene Editor for tweaking profiles in real-time
+- Built-in Scene Editor for tweaking all settings in real-time
 - Profile save/load as JSON
 
 ### UI
 - ImGui menu system (File, Graphics, View, Controls, About)
+- Scene Editor with sections for layers, lighting, shadows, transparency, sprite grouping, and sky
 - FPS and voxel count display
 - PNG screenshot capture (F12) with toast notifications
 - Native file dialog for ROM loading (Windows)
@@ -117,8 +123,16 @@ PPU State Extraction (VRAM, OAM, CGRAM, BG registers)
    v
 Voxelizer (tiles/sprites -> 3D voxel instances)
    |
+   +--- Sprite Grouping (merge adjacent sprites)
+   +--- Per-layer alpha / transparency
+   |
    v
-Software Rasterizer (cube projection, z-buffer, lighting)
+Software Rasterizer
+   |
+   +--- Directional lighting (configurable angle)
+   +--- Two-pass: opaque (z-write) then transparent (sorted, blended)
+   +--- Ground-plane shadow projection
+   +--- FXAA anti-aliasing
    |
    v
 SDL2 + ImGui (display, menu, input, audio)

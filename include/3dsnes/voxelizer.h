@@ -41,7 +41,27 @@ typedef struct {
     float brightness_depth; /* extra depth from pixel brightness (0=off, 1.0=full) */
     int bg_skip_layer;      /* layer index whose "sky color" pixels are skipped (-1=none) */
     uint8_t sky_r, sky_g, sky_b; /* sky color to skip (set at runtime from BG1) */
+    float light_dir[3];     /* normalized light direction (default: 0.3, 0.8, 0.5) */
+    float ambient;          /* ambient factor (default: 0.35) */
+    float diffuse;          /* diffuse factor (default: 0.65) */
+    float layer_alpha[4];   /* per-BG-layer alpha multiplier (0.0-1.0, default 1.0) */
+    float sprite_alpha;     /* sprite alpha multiplier (default 1.0) */
+    int      sky_type;          /* 0=solid, 1=gradient */
+    uint8_t  sky_top[3];        /* gradient top color RGB */
+    uint8_t  sky_bot[3];        /* gradient bottom color RGB */
+    bool shadows_enabled;       /* enable ground-plane shadow projection */
+    float shadow_opacity;       /* 0.0-1.0 how dark shadows get */
+    float shadow_y;             /* ground plane Y for shadows */
+    bool sprite_grouping;       /* enable sprite grouping (default false) */
+    int group_gap;              /* max pixel gap for grouping (default 1) */
 } VoxelProfile;
+
+/* Sprite group -- adjacent sprites merged into one 3D object */
+typedef struct {
+    int indices[64];    /* indices into ExtractedFrame.sprites[] */
+    int count;
+    int min_x, min_y, max_x, max_y; /* bounding box */
+} SpriteGroup;
 
 /* Result of voxelizing a frame */
 typedef struct {

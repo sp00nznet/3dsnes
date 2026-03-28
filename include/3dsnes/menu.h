@@ -76,6 +76,9 @@ const SDL_Scancode *menu_get_p2_keys(void);
 bool menu_get_snes_mouse_enabled(void);
 int  menu_get_snes_mouse_port(void);   /* 1 or 2 */
 
+/* Rendering features */
+bool menu_get_fxaa_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif

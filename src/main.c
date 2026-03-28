@@ -1202,6 +1202,22 @@ int main(int argc, char *argv[]) {
 
         if (g_rom_loaded) {
         if (show_3d_this_frame) {
+            /* Sync profile rendering settings to software renderer */
+            soft_renderer_set_lighting(&g_soft_renderer,
+                g_profile.light_dir[0], g_profile.light_dir[1], g_profile.light_dir[2],
+                g_profile.ambient, g_profile.diffuse);
+            g_soft_renderer.shadows_enabled = g_profile.shadows_enabled;
+            g_soft_renderer.shadow_opacity = g_profile.shadow_opacity;
+            g_soft_renderer.shadow_y = g_profile.shadow_y;
+            g_soft_renderer.fxaa_enabled = menu_get_fxaa_enabled();
+            g_soft_renderer.sky_type = g_profile.sky_type;
+            g_soft_renderer.sky_top_r = g_profile.sky_top[0];
+            g_soft_renderer.sky_top_g = g_profile.sky_top[1];
+            g_soft_renderer.sky_top_b = g_profile.sky_top[2];
+            g_soft_renderer.sky_bot_r = g_profile.sky_bot[0];
+            g_soft_renderer.sky_bot_g = g_profile.sky_bot[1];
+            g_soft_renderer.sky_bot_b = g_profile.sky_bot[2];
+
             if (g_use_software) {
                 soft_renderer_draw(&g_soft_renderer, &g_camera,
                                    g_voxel_mesh.instances, g_voxel_mesh.count);

@@ -154,6 +154,18 @@ static bool parse_float_array(const char *p, float *out, int count) {
     return true;
 }
 
+static bool parse_int_array(const char *p, int *out, int count) {
+    if (*p != '[') return false;
+    p++;
+    for (int i = 0; i < count; i++) {
+        p = skip_ws(p);
+        out[i] = (int)strtol(p, NULL, 0);
+        while (*p && *p != ',' && *p != ']') p++;
+        if (*p == ',') p++;
+    }
+    return true;
+}
+
 bool profile_load_json(const char *path, VoxelProfile *out) {
     FILE *f = fopen(path, "r");
     if (!f) return false;
@@ -180,6 +192,30 @@ bool profile_load_json(const char *path, VoxelProfile *out) {
     if ((v = find_key(json, "pixel_scale")))     out->pixel_scale = parse_float(v);
     if ((v = find_key(json, "brightness_depth")))out->brightness_depth = parse_float(v);
     if ((v = find_key(json, "bg_skip_layer")))   out->bg_skip_layer = parse_int(v);
+    if ((v = find_key(json, "light_dir")))      parse_float_array(v, out->light_dir, 3);
+    if ((v = find_key(json, "ambient")))         out->ambient = parse_float(v);
+    if ((v = find_key(json, "diffuse")))         out->diffuse = parse_float(v);
+    if ((v = find_key(json, "layer_alpha")))     parse_float_array(v, out->layer_alpha, 4);
+    if ((v = find_key(json, "sprite_alpha")))    out->sprite_alpha = parse_float(v);
+    if ((v = find_key(json, "sky_type")))        out->sky_type = parse_int(v);
+    {
+        int tmp[3];
+        if ((v = find_key(json, "sky_top")) && parse_int_array(v, tmp, 3)) {
+            out->sky_top[0] = (uint8_t)tmp[0];
+            out->sky_top[1] = (uint8_t)tmp[1];
+            out->sky_top[2] = (uint8_t)tmp[2];
+        }
+        if ((v = find_key(json, "sky_bot")) && parse_int_array(v, tmp, 3)) {
+            out->sky_bot[0] = (uint8_t)tmp[0];
+            out->sky_bot[1] = (uint8_t)tmp[1];
+            out->sky_bot[2] = (uint8_t)tmp[2];
+        }
+    }
+    if ((v = find_key(json, "shadows_enabled")))  out->shadows_enabled = parse_int(v) != 0;
+    if ((v = find_key(json, "shadow_opacity")))   out->shadow_opacity = parse_float(v);
+    if ((v = find_key(json, "shadow_y")))         out->shadow_y = parse_float(v);
+    if ((v = find_key(json, "sprite_grouping")))  out->sprite_grouping = parse_int(v) != 0;
+    if ((v = find_key(json, "group_gap")))        out->group_gap = parse_int(v);
 
     free(json);
     return true;
@@ -215,7 +251,25 @@ bool profile_save_json(const char *path, const VoxelProfile *profile,
     fprintf(f, "    \"sprite_depth\": %.1f,\n", profile->sprite_depth);
     fprintf(f, "    \"pixel_scale\": %.2f,\n", profile->pixel_scale);
     fprintf(f, "    \"brightness_depth\": %.2f,\n", profile->brightness_depth);
-    fprintf(f, "    \"bg_skip_layer\": %d\n", profile->bg_skip_layer);
+    fprintf(f, "    \"bg_skip_layer\": %d,\n", profile->bg_skip_layer);
+    fprintf(f, "    \"light_dir\": [%.4f, %.4f, %.4f],\n",
+            profile->light_dir[0], profile->light_dir[1], profile->light_dir[2]);
+    fprintf(f, "    \"ambient\": %.4f,\n", profile->ambient);
+    fprintf(f, "    \"diffuse\": %.4f,\n", profile->diffuse);
+    fprintf(f, "    \"layer_alpha\": [%.4f, %.4f, %.4f, %.4f],\n",
+            profile->layer_alpha[0], profile->layer_alpha[1],
+            profile->layer_alpha[2], profile->layer_alpha[3]);
+    fprintf(f, "    \"sprite_alpha\": %.4f,\n", profile->sprite_alpha);
+    fprintf(f, "    \"sky_type\": %d,\n", profile->sky_type);
+    fprintf(f, "    \"sky_top\": [%d, %d, %d],\n",
+            profile->sky_top[0], profile->sky_top[1], profile->sky_top[2]);
+    fprintf(f, "    \"sky_bot\": [%d, %d, %d],\n",
+            profile->sky_bot[0], profile->sky_bot[1], profile->sky_bot[2]);
+    fprintf(f, "    \"shadows_enabled\": %d,\n", profile->shadows_enabled ? 1 : 0);
+    fprintf(f, "    \"shadow_opacity\": %.4f,\n", profile->shadow_opacity);
+    fprintf(f, "    \"shadow_y\": %.4f,\n", profile->shadow_y);
+    fprintf(f, "    \"sprite_grouping\": %d,\n", profile->sprite_grouping ? 1 : 0);
+    fprintf(f, "    \"group_gap\": %d\n", profile->group_gap);
     fprintf(f, "}\n");
 
     fclose(f);
