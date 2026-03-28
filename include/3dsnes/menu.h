@@ -72,6 +72,10 @@ void    menu_set_layer_info(int bg_tiles[4], int bg_prio1[4], int sprite_count);
 const SDL_Scancode *menu_get_p1_keys(void);
 const SDL_Scancode *menu_get_p2_keys(void);
 
+/* SNES Mouse */
+bool menu_get_snes_mouse_enabled(void);
+int  menu_get_snes_mouse_port(void);   /* 1 or 2 */
+
 #ifdef __cplusplus
 }
 #endif

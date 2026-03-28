@@ -10,42 +10,48 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/angelo-wf/Lak
 |:---:|:---:|
 | ![Jurassic Park 3D](docs/jp_3d.png) | ![Jurassic Park 2D](docs/jp_2d.png) |
 | *Jurassic Park — 3D voxel diorama* | *Jurassic Park — original 2D* |
+| ![Street Fighter II](docs/sf2_3d.png) | ![Aladdin 3D](docs/aladdin_3d.png) |
+| *Super Street Fighter II — 3D arena* | *Aladdin — Agrabah marketplace* |
 | ![Lemmings 3D](docs/lemmings_3d.png) | ![Lemmings 2D](docs/lemmings_2d.png) |
 | *Lemmings — rocky cliff in 3D* | *Lemmings — original 2D* |
-| ![Arkanoid 3D](docs/arkanoid_3d.png) | ![Aladdin 3D](docs/aladdin_3d.png) |
-| *Arkanoid — bricks as 3D blocks* | *Aladdin — Agrabah marketplace* |
-| ![Caesars Palace 3D](docs/caesars_3d.png) | ![TMNT 3D](docs/tmnt_3d.png) |
-| *Caesars Palace — building facade* | *TMNT IV — bridge fight* |
-| ![Zelda Triforce](docs/zelda_triforce_3d.png) | ![Chrono Trigger](docs/chrono_3d.png) |
-| *Zelda: ALTTP — Triforce intro* | *Chrono Trigger — pendulum intro* |
-| ![Illusion of Gaia](docs/gaia_3d.png) | ![Street Fighter II](docs/sf2_3d.png) |
-| *Illusion of Gaia — Earth globe* | *Super Street Fighter II — character select* |
-
-## How It Works
-
-1. **Emulation** — LakeSnes runs the game with full CPU, PPU, APU, and DMA emulation
-2. **PPU Extraction** — Each frame, tile/sprite/palette data is read directly from PPU state (VRAM, OAM, CGRAM)
-3. **Voxelization** — 2D tiles are extruded into 3D voxel blocks with per-layer depth and brightness-based height variation
-4. **Rendering** — Software rasterizer draws colored cubes with directional lighting (GPU renderer planned)
-5. **Display** — SDL2 presents the rendered frame with an ImGui menu overlay
+| ![Arkanoid 3D](docs/arkanoid_3d.png) | ![TMNT 3D](docs/tmnt_3d.png) |
+| *Arkanoid — bricks as 3D blocks* | *TMNT IV — bridge fight* |
+| ![Zelda Triforce](docs/zelda_triforce_3d.png) | |
+| *Zelda: ALTTP — Triforce intro* | |
 
 ## Features
 
-- Real-time 3D voxel rendering of SNES games
-- Toggle between 3D and 2D views with F1
-- Automatic Mode 7 detection (seamless fallback to 2D for first-person/rotation sections)
-- Full SNES audio (SPC700 + DSP)
-- Orbit camera with mouse controls and preset views
-- ImGui menu system (File, Graphics, View, Controls, About)
-- Configurable controls with rebindable keys (2-player keyboard support)
-- Save states (F5/F7)
-- PNG screenshot capture (F12) with toast notifications
-- Native file dialog for ROM loading
-- ZIP ROM support
-- Per-game voxel profiles with auto-detection
-- Time-decoupled emulation (game runs at full 60fps regardless of render speed)
+### Emulation
+- Full SNES emulation via LakeSnes (CPU, PPU, APU/SPC700, DMA)
+- Full SNES audio with per-channel mute and master volume control
+- SNES Mouse support (for Mario Paint, etc.)
+- 2-player keyboard input with rebindable keys
+- Save states (F5 save / F7 load)
+- LoROM, HiROM, and ExHiROM cartridge support
+- ZIP ROM loading
+
+### 3D Rendering
+- Real-time voxel rendering of SNES tile/sprite layers
+- Toggle between 3D and 2D views (F1)
+- Automatic Mode 7 detection with seamless 2D fallback
+- Orbit camera with mouse drag, zoom (scroll wheel), and pan (middle drag)
+- Preset camera views: top-down (1), isometric (2), side (3)
+- Per-layer depth, height, and visibility controls via Scene Editor
 - Sky color auto-detection for scene background
-- Automated ROM test suite (`--test` flag)
+- Time-decoupled emulation — game runs at 60fps regardless of render speed
+
+### Per-Game Profiles
+- Voxel profiles with per-BG-layer depth, height, and extrusion settings
+- Auto-detection by ROM checksum and internal name
+- Built-in Scene Editor for tweaking profiles in real-time
+- Profile save/load as JSON
+
+### UI
+- ImGui menu system (File, Graphics, View, Controls, About)
+- FPS and voxel count display
+- PNG screenshot capture (F12) with toast notifications
+- Native file dialog for ROM loading (Windows)
+- Debug console
 
 ## Game Compatibility
 
@@ -64,6 +70,7 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full compatibility matrix w
 | Tab | Select |
 | Enter | Start |
 | F1 | Toggle 3D / 2D |
+| F4 | Capture / release SNES mouse |
 | F5 | Save state |
 | F7 | Load state |
 | F12 | Screenshot |

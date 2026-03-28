@@ -79,6 +79,10 @@ static struct {
 
     char    *rom_path;
 
+    /* SNES Mouse */
+    bool     snes_mouse_enabled;
+    int      snes_mouse_port;  /* 1 or 2 */
+
     /* Toast */
     char     toast_msg[256];
     Uint32   toast_start;  /* SDL_GetTicks when toast was triggered */
@@ -237,6 +241,23 @@ static void draw_controls_window(void) {
                     }
                     ImGui::EndTable();
                 }
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::CollapsingHeader("SNES Mouse")) {
+            ImGui::Checkbox("Enable SNES Mouse", &g_menu.snes_mouse_enabled);
+            if (g_menu.snes_mouse_enabled) {
+                ImGui::SameLine();
+                ImGui::Text("(F4 to capture/release)");
+                ImGui::Text("Port:");
+                ImGui::SameLine();
+                ImGui::RadioButton("1##mp", &g_menu.snes_mouse_port, 1);
+                ImGui::SameLine();
+                ImGui::RadioButton("2##mp", &g_menu.snes_mouse_port, 2);
             }
         }
 
@@ -630,6 +651,8 @@ extern "C" void menu_init(SDL_Window *window, SDL_Renderer *renderer) {
     g_menu.vsync = true;
     g_menu.master_volume = 1.0f;
     g_menu.rebind_button = -1;
+    g_menu.snes_mouse_enabled = false;
+    g_menu.snes_mouse_port = 1;
 
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
@@ -698,6 +721,8 @@ extern "C" char *menu_get_rom_path(void)           { return g_menu.rom_path; }
 extern "C" void menu_clear_rom_path(void)          { free(g_menu.rom_path); g_menu.rom_path = NULL; }
 extern "C" const SDL_Scancode *menu_get_p1_keys(void) { return g_p1_keys; }
 extern "C" const SDL_Scancode *menu_get_p2_keys(void) { return g_p2_keys; }
+extern "C" bool menu_get_snes_mouse_enabled(void) { return g_menu.snes_mouse_enabled; }
+extern "C" int  menu_get_snes_mouse_port(void)    { return g_menu.snes_mouse_port; }
 extern "C" void menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name) {
     g_editor_profile = profile;
     snprintf(g_editor_profile_path, sizeof(g_editor_profile_path), "%s", path ? path : "");

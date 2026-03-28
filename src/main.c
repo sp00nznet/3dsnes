@@ -26,6 +26,7 @@
  *   F1                 — Toggle 3D/2D mode
  *   F2                 — Toggle 2D overlay
  *   F3                 — Toggle wireframe
+ *   F4                 — Capture/release SNES mouse
  *   Escape             — Quit
  */
 
@@ -85,6 +86,11 @@ static bool g_mouse_panning = false;
 static int g_mouse_last_x, g_mouse_last_y;
 static bool g_save_requested = false;
 static bool g_load_requested = false;
+
+/* SNES Mouse state */
+static bool g_snes_mouse_captured = false;  /* SDL relative mouse mode active */
+static int  g_snes_mouse_prev_port = 0;     /* track port changes */
+static uint8_t g_snes_mouse_buttons = 0;    /* current button state */
 static char g_state_path[512] = {0};  /* path for save state file */
 static char g_rom_path_current[512] = {0}; /* currently loaded ROM */
 static char g_rom_internal_name[22] = {0}; /* SNES header internal name */
@@ -498,6 +504,11 @@ static void process_events(void) {
                 g_save_requested = true;
             } else if (ev.key.keysym.sym == SDLK_F7) {
                 g_load_requested = true;
+            } else if (ev.key.keysym.sym == SDLK_F4) {
+                if (menu_get_snes_mouse_enabled()) {
+                    g_snes_mouse_captured = !g_snes_mouse_captured;
+                    SDL_SetRelativeMouseMode(g_snes_mouse_captured ? SDL_TRUE : SDL_FALSE);
+                }
             } else if (ev.key.keysym.sym == SDLK_F12) {
                 take_screenshot(g_sdl_renderer, g_window);
             } else if (ev.key.keysym.sym == SDLK_1) {
@@ -518,7 +529,12 @@ static void process_events(void) {
             break;
 
         case SDL_MOUSEBUTTONDOWN:
-            if (!imgui_wants) {
+            if (g_snes_mouse_captured) {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    g_snes_mouse_buttons |= 1;
+                else if (ev.button.button == SDL_BUTTON_RIGHT)
+                    g_snes_mouse_buttons |= 2;
+            } else if (!imgui_wants) {
                 if (ev.button.button == SDL_BUTTON_LEFT) {
                     g_mouse_dragging = true;
                     g_mouse_last_x = ev.button.x;
@@ -532,24 +548,38 @@ static void process_events(void) {
             break;
 
         case SDL_MOUSEBUTTONUP:
+            if (g_snes_mouse_captured) {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    g_snes_mouse_buttons &= ~1;
+                else if (ev.button.button == SDL_BUTTON_RIGHT)
+                    g_snes_mouse_buttons &= ~2;
+            }
             if (ev.button.button == SDL_BUTTON_LEFT) g_mouse_dragging = false;
             if (ev.button.button == SDL_BUTTON_MIDDLE) g_mouse_panning = false;
             break;
 
         case SDL_MOUSEMOTION:
-            if (g_mouse_dragging) {
-                float dx = (float)(ev.motion.x - g_mouse_last_x);
-                float dy = (float)(ev.motion.y - g_mouse_last_y);
-                camera_orbit(&g_camera, dx * 0.3f, dy * 0.3f);
-                g_mouse_last_x = ev.motion.x;
-                g_mouse_last_y = ev.motion.y;
-            }
-            if (g_mouse_panning) {
-                float dx = (float)(ev.motion.x - g_mouse_last_x);
-                float dy = (float)(ev.motion.y - g_mouse_last_y);
-                camera_pan(&g_camera, -dx * 0.5f, dy * 0.5f);
-                g_mouse_last_x = ev.motion.x;
-                g_mouse_last_y = ev.motion.y;
+            if (g_snes_mouse_captured) {
+                int port = menu_get_snes_mouse_port();
+                snes_setMouseState(g_snes, port,
+                    (int16_t)ev.motion.xrel, (int16_t)ev.motion.yrel,
+                    (g_snes_mouse_buttons & 1) != 0,
+                    (g_snes_mouse_buttons & 2) != 0);
+            } else {
+                if (g_mouse_dragging) {
+                    float dx = (float)(ev.motion.x - g_mouse_last_x);
+                    float dy = (float)(ev.motion.y - g_mouse_last_y);
+                    camera_orbit(&g_camera, dx * 0.3f, dy * 0.3f);
+                    g_mouse_last_x = ev.motion.x;
+                    g_mouse_last_y = ev.motion.y;
+                }
+                if (g_mouse_panning) {
+                    float dx = (float)(ev.motion.x - g_mouse_last_x);
+                    float dy = (float)(ev.motion.y - g_mouse_last_y);
+                    camera_pan(&g_camera, -dx * 0.5f, dy * 0.5f);
+                    g_mouse_last_x = ev.motion.x;
+                    g_mouse_last_y = ev.motion.y;
+                }
             }
             break;
 
@@ -740,6 +770,37 @@ int main(int argc, char *argv[]) {
     while (g_running) {
         /* Process input */
         process_events();
+
+        /* SNES Mouse: sync device type with menu setting */
+        {
+            bool mouse_en = menu_get_snes_mouse_enabled();
+            int  mouse_port = menu_get_snes_mouse_port();
+            int  want_type = mouse_en ? 2 : 1; /* inputDeviceMouse or inputDeviceController */
+
+            /* Release capture if mouse was disabled */
+            if (!mouse_en && g_snes_mouse_captured) {
+                g_snes_mouse_captured = false;
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+            }
+
+            /* Update device type on the correct port */
+            if (mouse_en) {
+                if (g_snes_mouse_prev_port && g_snes_mouse_prev_port != mouse_port) {
+                    snes_setInputDevice(g_snes, g_snes_mouse_prev_port, 1); /* restore old port to controller */
+                }
+                snes_setInputDevice(g_snes, mouse_port, want_type);
+            } else if (g_snes_mouse_prev_port) {
+                snes_setInputDevice(g_snes, g_snes_mouse_prev_port, 1);
+            }
+            g_snes_mouse_prev_port = mouse_en ? mouse_port : 0;
+
+            /* Update button state each frame (motion is sent per-event) */
+            if (g_snes_mouse_captured) {
+                snes_setMouseState(g_snes, mouse_port, 0, 0,
+                    (g_snes_mouse_buttons & 1) != 0,
+                    (g_snes_mouse_buttons & 2) != 0);
+            }
+        }
 
         /* Time-based emulation: run enough SNES frames to keep up with real time.
          * This decouples emulation speed from render speed — game runs at 60fps
