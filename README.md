@@ -126,7 +126,7 @@ SDL2 + ImGui (display, menu, input, audio)
 
 ## Credits
 
-- [LakeSnes](https://github.com/angelo-wf/LakeSnes) by angelo-wf — SNES emulation core
+- [LakeSnes](https://github.com/sp00nznet/LakeSnes) (fork of [angelo-wf/LakeSnes](https://github.com/angelo-wf/LakeSnes)) — SNES emulation core
 - [Dear ImGui](https://github.com/ocornut/imgui) — UI framework
 - [SDL2](https://www.libsdl.org/) — windowing, audio, input
 - [glad](https://github.com/Dav1dde/glad) — OpenGL loader
