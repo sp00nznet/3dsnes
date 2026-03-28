@@ -1,0 +1,11 @@
+{
+    "rom_name": "SUPER MARIOWORLD",
+    "rom_checksum": "0xA0DA",
+    "bg_z": [3.0, 0.0, 12.0, 0.0],
+    "bg_depth": [5.0, 2.0, 1.0, 0.0],
+    "sprite_z": 5.0,
+    "sprite_depth": 5.0,
+    "pixel_scale": 1.00,
+    "brightness_depth": 1.50,
+    "bg_skip_layer": 1
+}

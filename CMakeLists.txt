@@ -34,7 +34,7 @@ target_link_libraries(imgui PRIVATE SDL2::SDL2)
 # --- 3dSNES executable ---
 file(GLOB TDSNES_C_SRC src/*.c)
 list(FILTER TDSNES_C_SRC EXCLUDE REGEX "test_emu\\.c$")
-add_executable(3dsnes ${TDSNES_C_SRC} src/menu.cpp)
+add_executable(3dsnes WIN32 ${TDSNES_C_SRC} src/menu.cpp)
 target_include_directories(3dsnes PRIVATE include ext/LakeSnes ext/glad/include ext)
 target_link_libraries(3dsnes PRIVATE
     lakesnes

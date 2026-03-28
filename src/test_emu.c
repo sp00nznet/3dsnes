@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
 
         // extract + voxelize + render 3D
         ppu_extract_frame(snes->ppu, &g_extracted);
-        voxelize_frame(&g_extracted, &g_profile, &g_mesh);
+        voxelize_frame(&g_extracted, &g_profile, &g_mesh, 0x1F);
         renderer_upload_voxels(&g_renderer, &g_mesh);
         renderer_draw(&g_renderer, &g_camera, g_mesh.count);
 

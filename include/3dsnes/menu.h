@@ -7,7 +7,9 @@
 #define MENU_H
 
 #include <SDL.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include "3dsnes/voxelizer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +53,20 @@ void menu_set_voxel_count(int count);
 
 /* Toast notification (bottom-right, fades after ~2 seconds) */
 void menu_show_toast(const char *message);
+
+/* Audio */
+float menu_get_master_volume(void);   /* 0.0 - 1.0 */
+bool  menu_get_channel_muted(int ch); /* ch: 0-7 */
+
+/* Debug */
+bool  menu_get_debug_console(void);
+
+/* Scene Editor — profile editing */
+void    menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name);
+bool    menu_profile_dirty(void);
+void    menu_clear_profile_dirty(void);
+uint8_t menu_get_visible_layers(void);  /* bitmask: bits 0-3 = BG, bit 4 = sprites */
+void    menu_set_layer_info(int bg_tiles[4], int bg_prio1[4], int sprite_count);
 
 /* Input bindings — returns array of 12 scancodes */
 const SDL_Scancode *menu_get_p1_keys(void);

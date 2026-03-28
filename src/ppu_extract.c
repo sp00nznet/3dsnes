@@ -114,18 +114,25 @@ static void extract_bg_layer(const Ppu *ppu, int layer, ExtractedFrame *frame) {
     int tile_w = big_tiles ? 16 : 8;
     int tile_h = big_tiles ? 16 : 8;
 
-    /* Visible area: 256x224 pixels */
+    /* Visible area: 256x224 pixels.
+     * Walk screen positions from the sub-tile offset to cover all visible tiles
+     * including partial tiles at edges. */
     int screen_w = 256;
     int screen_h = 224;
 
-    /* Walk through visible tile grid positions */
-    for (int sy = 0; sy < screen_h; sy += tile_h) {
-        for (int sx = 0; sx < screen_w; sx += tile_w) {
+    /* Sub-tile scroll offset: where the first tile starts on screen.
+     * If hScroll=5, the first visible tile is shifted 5 pixels left,
+     * so it starts at screen x = -5. */
+    int off_x = -(bg->hScroll % tile_w);
+    int off_y = -(bg->vScroll % tile_h);
+
+    for (int sy_pos = off_y; sy_pos < screen_h; sy_pos += tile_h) {
+        for (int sx = off_x; sx < screen_w; sx += tile_w) {
             if (frame->bg_tile_count >= MAX_BG_TILES) return;
 
-            /* Apply scroll to get VRAM coordinates */
+            /* VRAM coordinates: screen pos + scroll, wrapped to 10-bit range */
             int vx = (sx + bg->hScroll) & 0x3ff;
-            int vy = (sy + bg->vScroll) & 0x3ff;
+            int vy = (sy_pos + bg->vScroll) & 0x3ff;
 
             /* Calculate tilemap address */
             int tile_bits_x = big_tiles ? 4 : 3;
@@ -161,7 +168,7 @@ static void extract_bg_layer(const Ppu *ppu, int layer, ExtractedFrame *frame) {
             /* Decode the tile */
             ExtractedBgTile *bt = &frame->bg_tiles[frame->bg_tile_count];
             bt->screen_x = sx;
-            bt->screen_y = sy;
+            bt->screen_y = sy_pos;
             bt->bg_layer = layer;
             bt->priority = prio;
             bt->tile_num = tile_num;

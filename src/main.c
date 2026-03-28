@@ -38,12 +38,17 @@
 
 #include "snes/snes.h"
 #include "snes/ppu.h"
+#include "snes/dsp.h"
 #include "snes/input.h"
 #include "zip/zip.h"
 
+#include <glad/glad.h>
+
+#include "3dsnes/profile_manager.h"
 #include "3dsnes/ppu_extract.h"
 #include "3dsnes/voxelizer.h"
 #include "3dsnes/soft_renderer.h"
+#include "3dsnes/renderer.h"
 #include "3dsnes/camera.h"
 #include "3dsnes/menu.h"
 #include "stb_image_write.h"
@@ -61,6 +66,10 @@ static uint8_t g_pixel_buf[512 * 480 * 4]; /* must be 480 lines for ppu_putPixel
 static int16_t g_audio_buf[800 * 2]; /* 1 frame @ 48000 Hz / 60 fps, stereo */
 
 static SoftRenderer g_soft_renderer;
+static Renderer g_gpu_renderer;
+static bool g_gpu_renderer_ready = false;
+static SDL_Window *g_gl_window = NULL;    /* hidden window for GL context */
+static SDL_GLContext g_gl_context = NULL;
 static bool g_use_software = true;  /* default to software renderer */
 static Camera g_camera;
 static VoxelMesh g_voxel_mesh;
@@ -68,6 +77,7 @@ static VoxelProfile g_profile;
 static ExtractedFrame g_extracted;
 
 static bool g_running = true;
+static bool g_rom_loaded = false;
 static bool g_show_3d = false;
 static bool g_show_overlay = false;
 static bool g_mouse_dragging = false;
@@ -77,6 +87,9 @@ static bool g_save_requested = false;
 static bool g_load_requested = false;
 static char g_state_path[512] = {0};  /* path for save state file */
 static char g_rom_path_current[512] = {0}; /* currently loaded ROM */
+static char g_rom_internal_name[22] = {0}; /* SNES header internal name */
+static uint16_t g_rom_checksum = 0;
+static char g_profile_path[512] = {0};     /* active profile JSON path */
 
 /* ── ROM Loading ─────────────────────────────────────────────────── */
 
@@ -281,6 +294,97 @@ static void do_load_state(void) {
     fflush(stdout);
 }
 
+/* ── GPU Renderer ──────────────────────────────────────────────── */
+
+static bool init_gpu_renderer(int w, int h) {
+    if (g_gpu_renderer_ready) return true;
+
+    /* Create a hidden window with an OpenGL 3.3 context for offscreen rendering */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+    g_gl_window = SDL_CreateWindow(
+        "3dSNES GL", 0, 0, 1, 1,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN
+    );
+    if (!g_gl_window) {
+        fprintf(stderr, "GPU init failed: SDL_CreateWindow: %s\n", SDL_GetError());
+        menu_show_toast("GPU init failed (no GL window)");
+        return false;
+    }
+
+    g_gl_context = SDL_GL_CreateContext(g_gl_window);
+    if (!g_gl_context) {
+        fprintf(stderr, "GPU init failed: SDL_GL_CreateContext: %s\n", SDL_GetError());
+        menu_show_toast("GPU init failed (no GL context)");
+        SDL_DestroyWindow(g_gl_window);
+        g_gl_window = NULL;
+        return false;
+    }
+
+    if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
+        fprintf(stderr, "GPU init failed: gladLoadGLLoader\n");
+        menu_show_toast("GPU init failed (GLAD)");
+        SDL_GL_DeleteContext(g_gl_context);
+        g_gl_context = NULL;
+        SDL_DestroyWindow(g_gl_window);
+        g_gl_window = NULL;
+        return false;
+    }
+
+    printf("OpenGL: %s / %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+
+    if (!renderer_init(&g_gpu_renderer, w, h)) {
+        fprintf(stderr, "GPU init failed: renderer_init\n");
+        menu_show_toast("GPU init failed (renderer)");
+        SDL_GL_DeleteContext(g_gl_context);
+        g_gl_context = NULL;
+        SDL_DestroyWindow(g_gl_window);
+        g_gl_window = NULL;
+        return false;
+    }
+
+    g_gpu_renderer_ready = true;
+    printf("GPU renderer initialized (%dx%d)\n", w, h);
+    fflush(stdout);
+    menu_show_toast("GPU renderer active");
+    return true;
+}
+
+static void shutdown_gpu_renderer(void) {
+    if (g_gpu_renderer_ready) {
+        SDL_GL_MakeCurrent(g_gl_window, g_gl_context);
+        renderer_shutdown(&g_gpu_renderer);
+        g_gpu_renderer_ready = false;
+    }
+    if (g_gl_context) {
+        SDL_GL_DeleteContext(g_gl_context);
+        g_gl_context = NULL;
+    }
+    if (g_gl_window) {
+        SDL_DestroyWindow(g_gl_window);
+        g_gl_window = NULL;
+    }
+}
+
+/* ── Audio Helpers ────────────────────────────────────────────────── */
+
+static void apply_master_volume(int16_t *buf, int sample_count, float volume) {
+    for (int i = 0; i < sample_count * 2; i++) { /* *2 for stereo */
+        buf[i] = (int16_t)(buf[i] * volume);
+    }
+}
+
+static void sync_audio_settings(Snes *snes) {
+    float vol = menu_get_master_volume();
+    (void)vol; /* master volume applied post-mix */
+    for (int i = 0; i < 8; i++) {
+        snes->apu->dsp->channelMuted[i] = menu_get_channel_muted(i);
+    }
+}
+
 static void set_state_path_from_rom(const char *rom_path) {
     /* Create state filename from ROM name: "romname.state" */
     const char *slash = strrchr(rom_path, '/');
@@ -292,6 +396,41 @@ static void set_state_path_from_rom(const char *rom_path) {
     char *dot = strrchr(g_state_path, '.');
     if (dot) *dot = '\0';
     strcat(g_state_path, ".state");
+}
+
+static VoxelProfile get_hardcoded_profile(const char *path) {
+    const char *rp = path;
+    const char *slash = strrchr(rp, '/');
+    if (!slash) slash = strrchr(rp, '\\');
+    if (slash) rp = slash + 1;
+
+    if (strstr(rp, "Mario World") || strstr(rp, "mario world") || strstr(rp, "MARIO WORLD"))
+        return voxel_profile_smw();
+    if (strstr(rp, "Zelda") || strstr(rp, "zelda") || strstr(rp, "ZELDA"))
+        return voxel_profile_zelda_alttp();
+    return voxel_profile_generic();
+}
+
+static void select_voxel_profile(const char *path, const uint8_t *rom_data, int rom_size) {
+    /* Extract ROM identity */
+    profile_read_rom_identity(rom_data, rom_size, g_rom_internal_name, &g_rom_checksum);
+    printf("ROM identity: \"%s\" checksum=0x%04X\n", g_rom_internal_name, g_rom_checksum);
+
+    /* Build profile path and try loading */
+    profile_build_path(g_profile_path, sizeof(g_profile_path),
+                       g_rom_internal_name, g_rom_checksum);
+
+    if (profile_load_json(g_profile_path, &g_profile)) {
+        printf("Profile loaded: %s\n", g_profile_path);
+    } else {
+        /* Fall back to hardcoded profile */
+        g_profile = get_hardcoded_profile(path);
+        printf("Profile: hardcoded fallback (%s)\n", g_profile_path);
+    }
+
+    /* Tell the menu about the profile for the scene editor */
+    menu_set_profile(&g_profile, g_profile_path, g_rom_internal_name);
+    fflush(stdout);
 }
 
 static bool load_new_rom(const char *path) {
@@ -314,10 +453,12 @@ static bool load_new_rom(const char *path) {
         snprintf(msg, sizeof(msg), "Loaded: %s", s ? s + 1 : path);
         menu_show_toast(msg);
     }
-    free(rom_data);
 
     snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", path);
     set_state_path_from_rom(path);
+    select_voxel_profile(path, rom_data, rom_size);
+    free(rom_data);
+    g_rom_loaded = true;
 
     /* Update window title */
     const char *slash = strrchr(path, '/');
@@ -428,13 +569,15 @@ static void process_events(void) {
 /* ── Main ────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: 3dsnes <rom.sfc> [--test]\n");
+    const char *rom_path = (argc >= 2 && argv[1][0] != '-') ? argv[1] : NULL;
+    bool test_mode = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--test") == 0) test_mode = true;
+    }
+    if (test_mode && !rom_path) {
+        fprintf(stderr, "Usage: 3dsnes <rom.sfc> --test\n");
         return 1;
     }
-
-    const char *rom_path = argv[1];
-    bool test_mode = (argc >= 3 && strcmp(argv[2], "--test") == 0);
 
     /* Set test output directory from executable path */
     if (test_mode) {
@@ -453,7 +596,7 @@ int main(int argc, char *argv[]) {
 
     int win_w = 1280, win_h = 960;
     g_window = SDL_CreateWindow(
-        "3dSNES — Super Mario World",
+        "3dSNES",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         win_w, win_h,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
@@ -513,44 +656,48 @@ int main(int argc, char *argv[]) {
     snes_setPixelFormat(g_snes, pixelFormatRGBX);
     /* NOTE: do NOT call snes_setPixels here — call it per-frame after snes_runFrame */
 
-    /* Load ROM */
-    int rom_size = 0;
-    uint8_t *rom_data = load_file(rom_path, &rom_size);
-    if (!rom_data) return 1;
+    /* Load ROM (optional — if no ROM given, user can load via File menu) */
+    if (rom_path) {
+        int rom_size = 0;
+        uint8_t *rom_data = load_file(rom_path, &rom_size);
+        if (!rom_data) return 1;
 
-    if (!snes_loadRom(g_snes, rom_data, rom_size)) {
-        fprintf(stderr, "Failed to load ROM: %s\n", rom_path);
-        free(rom_data);
-        return 1;
-    }
-    printf("ROM loaded: %s (%d bytes)\n", rom_path, rom_size);
-    free(rom_data);
-    snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", rom_path);
-    set_state_path_from_rom(rom_path);
-
-    /* Set ROM basename for test mode screenshots (sanitized for filenames) */
-    {
-        const char *s = strrchr(rom_path, '/');
-        if (!s) s = strrchr(rom_path, '\\');
-        snprintf(g_rom_basename, sizeof(g_rom_basename), "%s", s ? s + 1 : rom_path);
-        char *dot = strrchr(g_rom_basename, '.');
-        if (dot) *dot = '\0';
-        /* Replace unsafe chars with underscores */
-        for (char *p = g_rom_basename; *p; p++) {
-            if (*p == '!' || *p == '[' || *p == ']' || *p == '(' || *p == ')' ||
-                *p == '\'' || *p == '&' || *p == ' ')
-                *p = '_';
+        if (!snes_loadRom(g_snes, rom_data, rom_size)) {
+            fprintf(stderr, "Failed to load ROM: %s\n", rom_path);
+            free(rom_data);
+            return 1;
         }
-    }
+        printf("ROM loaded: %s (%d bytes)\n", rom_path, rom_size);
+        snprintf(g_rom_path_current, sizeof(g_rom_path_current), "%s", rom_path);
+        set_state_path_from_rom(rom_path);
+        select_voxel_profile(rom_path, rom_data, rom_size);
+        free(rom_data);
+        g_rom_loaded = true;
 
-    /* Set window title from ROM name */
-    {
-        const char *slash = strrchr(rom_path, '/');
-        if (!slash) slash = strrchr(rom_path, '\\');
-        const char *name = slash ? slash + 1 : rom_path;
-        char title[256];
-        snprintf(title, sizeof(title), "3dSNES — %s", name);
-        SDL_SetWindowTitle(g_window, title);
+        /* Set ROM basename for test mode screenshots (sanitized for filenames) */
+        {
+            const char *s = strrchr(rom_path, '/');
+            if (!s) s = strrchr(rom_path, '\\');
+            snprintf(g_rom_basename, sizeof(g_rom_basename), "%s", s ? s + 1 : rom_path);
+            char *dot = strrchr(g_rom_basename, '.');
+            if (dot) *dot = '\0';
+            /* Replace unsafe chars with underscores */
+            for (char *p = g_rom_basename; *p; p++) {
+                if (*p == '!' || *p == '[' || *p == ']' || *p == '(' || *p == ')' ||
+                    *p == '\'' || *p == '&' || *p == ' ')
+                    *p = '_';
+            }
+        }
+
+        /* Set window title from ROM name */
+        {
+            const char *slash = strrchr(rom_path, '/');
+            if (!slash) slash = strrchr(rom_path, '\\');
+            const char *name = slash ? slash + 1 : rom_path;
+            char title[256];
+            snprintf(title, sizeof(title), "3dSNES — %s", name);
+            SDL_SetWindowTitle(g_window, title);
+        }
     }
 
     /* ── Initialize 3D systems ───────────────────────────────── */
@@ -572,24 +719,9 @@ int main(int argc, char *argv[]) {
 
     voxel_mesh_init(&g_voxel_mesh, 2000000); /* pre-allocate large, never realloc */
 
-    /* Pick voxel profile based on ROM filename */
-    {
-        const char *rp = rom_path;
-        /* Find just the filename */
-        const char *slash = strrchr(rp, '/');
-        if (!slash) slash = strrchr(rp, '\\');
-        if (slash) rp = slash + 1;
-
-        if (strstr(rp, "Mario World") || strstr(rp, "mario world") || strstr(rp, "MARIO WORLD")) {
-            g_profile = voxel_profile_smw();
-            printf("Profile: Super Mario World\n");
-        } else if (strstr(rp, "Zelda") || strstr(rp, "zelda") || strstr(rp, "ZELDA")) {
-            g_profile = voxel_profile_zelda_alttp();
-            printf("Profile: Zelda: ALTTP\n");
-        } else {
-            g_profile = voxel_profile_generic();
-            printf("Profile: Generic\n");
-        }
+    /* Profile was already selected during ROM load above; default for no-ROM */
+    if (!rom_path) {
+        g_profile = voxel_profile_generic();
     }
 
     printf("\n3dSNES ready!\n");
@@ -612,11 +744,17 @@ int main(int argc, char *argv[]) {
         /* Time-based emulation: run enough SNES frames to keep up with real time.
          * This decouples emulation speed from render speed — game runs at 60fps
          * even when 3D rendering is slower. */
+        bool mode7_active = false;
+        bool show_3d_this_frame = false;
+
         Uint32 now = SDL_GetTicks();
         float elapsed = (float)(now - frame_start);
         frame_start = now;
         if (elapsed > 100.0f) elapsed = 100.0f; /* cap to avoid spiral of death */
 
+        if (g_rom_loaded) {
+        sync_audio_settings(g_snes);
+        float master_vol = menu_get_master_volume();
         emu_accumulator += elapsed;
         int emu_frames = 0;
         while (emu_accumulator >= target_frame_ms && emu_frames < 4) {
@@ -627,6 +765,7 @@ int main(int argc, char *argv[]) {
             /* Audio for each emu frame */
             snes_setSamples(g_snes, g_audio_buf, wantedSamples);
             if (g_audio_dev > 0) {
+                apply_master_volume(g_audio_buf, wantedSamples, master_vol);
                 if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
                     SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
                 }
@@ -638,6 +777,7 @@ int main(int argc, char *argv[]) {
             snes_runFrame(g_snes);
             snes_setSamples(g_snes, g_audio_buf, wantedSamples);
             if (g_audio_dev > 0) {
+                apply_master_volume(g_audio_buf, wantedSamples, master_vol);
                 if (SDL_GetQueuedAudioSize(g_audio_dev) <= (uint32_t)(wantedSamples * 4 * 6)) {
                     SDL_QueueAudio(g_audio_dev, g_audio_buf, wantedSamples * 4);
                 }
@@ -648,13 +788,25 @@ int main(int argc, char *argv[]) {
         snes_setPixels(g_snes, g_pixel_buf);
 
         /* Auto-fallback: Mode 7 can't be voxelized */
-        bool mode7_active = (g_snes->ppu->mode == 7);
-        bool show_3d_this_frame = g_show_3d && !mode7_active;
+        mode7_active = (g_snes->ppu->mode == 7);
+        show_3d_this_frame = g_show_3d && !mode7_active;
 
         /* Only extract/voxelize when in 3D mode and not Mode 7 */
         if (show_3d_this_frame) {
             ppu_extract_frame(g_snes->ppu, &g_extracted);
-            voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
+            voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh, menu_get_visible_layers());
+            /* Update layer info for scene editor */
+            {
+                int bg_tiles[4] = {0}, bg_prio1[4] = {0};
+                for (int i = 0; i < g_extracted.bg_tile_count; i++) {
+                    int l = g_extracted.bg_tiles[i].bg_layer;
+                    if (l >= 0 && l < 4) {
+                        bg_tiles[l]++;
+                        if (g_extracted.bg_tiles[i].priority) bg_prio1[l]++;
+                    }
+                }
+                menu_set_layer_info(bg_tiles, bg_prio1, g_extracted.sprite_count);
+            }
         }
 
         /* Set renderer clear color from BG1 (background layer) most common color */
@@ -709,9 +861,10 @@ int main(int argc, char *argv[]) {
                 g_profile.sky_b = best_b;
             }
         }
+        } /* end if (g_rom_loaded) — emulation + extraction */
 
         /* ── DIAGNOSTIC: one-time dump at frame 60 ────────────── */
-        {
+        if (g_rom_loaded) {
             static int diag_frame = 0;
             diag_frame++;
             if (diag_frame == 300 || diag_frame == 600) {
@@ -794,7 +947,6 @@ int main(int argc, char *argv[]) {
                 printf("=== END DIAGNOSTIC ===\n\n");
                 fflush(stdout);
             }
-        }
 
         /* ── Test mode: multi-stage screenshot + diagnostics ───── */
         if (test_mode) {
@@ -846,7 +998,7 @@ int main(int argc, char *argv[]) {
             else if (test_stage == 6 && elapsed >= 40000) {
                 /* Extract diagnostic data */
                 ppu_extract_frame(g_snes->ppu, &g_extracted);
-                voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh);
+                voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh, menu_get_visible_layers());
 
                 int layer_tiles[4] = {0}, layer_opaque[4] = {0};
                 for (int i = 0; i < g_extracted.bg_tile_count; i++) {
@@ -892,6 +1044,7 @@ int main(int argc, char *argv[]) {
                 g_running = false;
             }
         }
+        } /* end if (g_rom_loaded) — diagnostics + test mode */
 
         /* ── FPS tracking ──────────────────────────────────────── */
         {
@@ -930,12 +1083,12 @@ int main(int argc, char *argv[]) {
         }
 
         /* Handle save/load state (from menu or hotkey) */
-        if (menu_save_requested() || g_save_requested) {
+        if (g_rom_loaded && (menu_save_requested() || g_save_requested)) {
             do_save_state();
             menu_clear_save_request();
             g_save_requested = false;
         }
-        if (menu_load_requested() || g_load_requested) {
+        if (g_rom_loaded && (menu_load_requested() || g_load_requested)) {
             do_load_state();
             menu_clear_load_request();
             g_load_requested = false;
@@ -950,15 +1103,65 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        /* Auto-save profile when scene editor modifies it (1-second debounce) */
+        if (g_rom_loaded && menu_profile_dirty()) {
+            static Uint32 last_dirty = 0;
+            Uint32 now_ms = SDL_GetTicks();
+            if (last_dirty == 0) last_dirty = now_ms;
+            if (now_ms - last_dirty >= 1000) {
+                profile_save_json(g_profile_path, &g_profile,
+                                  g_rom_internal_name, g_rom_checksum);
+                menu_clear_profile_dirty();
+                menu_show_toast("Profile saved");
+                last_dirty = 0;
+            }
+        }
+
+        /* Handle renderer type switch */
+        {
+            int rtype = menu_get_renderer_type();
+            bool want_gpu = (rtype == 1);
+            if (want_gpu != !g_use_software) {
+                if (want_gpu) {
+                    if (init_gpu_renderer(256, 224)) {
+                        g_use_software = false;
+                    } else {
+                        /* Failed — revert menu to CPU */
+                        g_use_software = true;
+                    }
+                } else {
+                    g_use_software = true;
+                    menu_show_toast("CPU renderer active");
+                }
+            }
+        }
+
         /* Render and display */
         SDL_RenderClear(g_sdl_renderer);
 
+        if (g_rom_loaded) {
         if (show_3d_this_frame) {
-            soft_renderer_draw(&g_soft_renderer, &g_camera,
-                               g_voxel_mesh.instances, g_voxel_mesh.count);
-            const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
-            SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
-                              g_soft_renderer.width * 4);
+            if (g_use_software) {
+                soft_renderer_draw(&g_soft_renderer, &g_camera,
+                                   g_voxel_mesh.instances, g_voxel_mesh.count);
+                const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
+                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
+                                  g_soft_renderer.width * 4);
+            } else if (g_gpu_renderer_ready) {
+                SDL_GL_MakeCurrent(g_gl_window, g_gl_context);
+                renderer_upload_voxels(&g_gpu_renderer, &g_voxel_mesh);
+                /* Upload 2D framebuffer for overlay mode */
+                renderer_upload_framebuffer(&g_gpu_renderer, g_pixel_buf, 512, 480);
+                g_gpu_renderer.show_3d = true;
+                g_gpu_renderer.show_overlay = g_show_overlay;
+                /* Set clear color from sky */
+                glClearColor(g_soft_renderer.clear_r / 255.0f,
+                             g_soft_renderer.clear_g / 255.0f,
+                             g_soft_renderer.clear_b / 255.0f, 1.0f);
+                renderer_draw(&g_gpu_renderer, &g_camera, g_voxel_mesh.count);
+                const uint8_t *rendered = renderer_readback(&g_gpu_renderer);
+                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered, 256 * 4);
+            }
             SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_3d, NULL, NULL);
         } else {
             /* 2D SNES framebuffer — extract 256x224 active area from 512x480 PPU output.
@@ -976,6 +1179,7 @@ int main(int argc, char *argv[]) {
             SDL_UpdateTexture(g_sdl_texture_2d, NULL, active_buf, 256 * 4);
             SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_2d, NULL, NULL);
         }
+        } /* end if (g_rom_loaded) — game rendering */
 
         /* Draw ImGui menu bar on top of everything */
         menu_draw();
@@ -987,12 +1191,15 @@ int main(int argc, char *argv[]) {
             take_screenshot(g_sdl_renderer, g_window);
             menu_clear_screenshot_request();
         }
+
+        if (!g_rom_loaded) SDL_Delay(16); /* ~60fps idle when no ROM */
     }
 
     /* ── Cleanup ─────────────────────────────────────────────── */
     menu_shutdown();
     voxel_mesh_free(&g_voxel_mesh);
     soft_renderer_shutdown(&g_soft_renderer);
+    shutdown_gpu_renderer();
     snes_free(g_snes);
 
     if (g_audio_dev > 0) SDL_CloseAudioDevice(g_audio_dev);

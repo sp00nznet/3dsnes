@@ -3,6 +3,7 @@
  */
 
 #include "3dsnes/menu.h"
+#include "3dsnes/voxelizer.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
@@ -64,12 +65,17 @@ static struct {
 
     bool     show_about;
     bool     show_controls;
+    bool     show_debug_console;
+    bool     show_scene_editor;
 
     int      rebind_player;
     int      rebind_button;
 
     float    current_fps;
     int      voxel_count;
+
+    float    master_volume;    /* 0.0 - 1.0 */
+    bool     audio_window_open;
 
     char    *rom_path;
 
@@ -80,6 +86,16 @@ static struct {
 
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Window   *g_window = NULL;
+
+/* Scene editor state */
+static VoxelProfile *g_editor_profile = NULL;
+static char g_editor_profile_path[512] = {0};
+static char g_editor_rom_name[64] = {0};
+static bool g_editor_dirty = false;
+static uint8_t g_visible_layers = 0x1F; /* all visible */
+static int g_layer_bg_tiles[4] = {0};
+static int g_layer_bg_prio1[4] = {0};
+static int g_layer_sprite_count = 0;
 
 /* ── File Dialog ────────────────────────────────────────────────── */
 
@@ -243,6 +259,204 @@ static void draw_controls_window(void) {
     ImGui::End();
 }
 
+/* ── Scene Editor Window ──────────────────────────────────────────── */
+
+static void draw_scene_editor(void) {
+    if (!g_menu.show_scene_editor || !g_editor_profile) return;
+
+    ImGui::SetNextWindowSize(ImVec2(360, 580), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Scene Editor", &g_menu.show_scene_editor)) {
+        VoxelProfile *p = g_editor_profile;
+
+        /* Header with save/reset */
+        if (ImGui::Button("Save")) {
+            g_editor_dirty = true; /* trigger immediate save */
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset to Default")) {
+            /* Reset based on ROM name matching */
+            const char *n = g_editor_rom_name;
+            if (strstr(n, "MARIO") || strstr(n, "mario"))
+                *p = voxel_profile_smw();
+            else if (strstr(n, "ZELDA") || strstr(n, "zelda"))
+                *p = voxel_profile_zelda_alttp();
+            else
+                *p = voxel_profile_generic();
+            g_editor_dirty = true;
+        }
+
+        ImGui::TextDisabled("%s", g_editor_rom_name[0] ? g_editor_rom_name : "(no ROM)");
+        ImGui::Separator();
+
+        /* == Global Settings == */
+        if (ImGui::CollapsingHeader("Global Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("Pixel Scale", &p->pixel_scale, 0.5f, 3.0f, "%.2f"))
+                g_editor_dirty = true;
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::SliderFloat("Brightness Depth", &p->brightness_depth, 0.0f, 5.0f, "%.2f"))
+                g_editor_dirty = true;
+
+            /* Sky skip layer combo */
+            const char *skip_items[] = { "None", "BG 0", "BG 1", "BG 2", "BG 3" };
+            int skip_idx = p->bg_skip_layer + 1; /* -1 → 0, 0 → 1, etc. */
+            ImGui::SetNextItemWidth(200);
+            if (ImGui::Combo("Sky Skip Layer", &skip_idx, skip_items, 5)) {
+                p->bg_skip_layer = skip_idx - 1;
+                g_editor_dirty = true;
+            }
+        }
+
+        ImGui::Spacing();
+
+        /* == Per-layer controls == */
+        const char *layer_names[] = { "BG 0", "BG 1", "BG 2", "BG 3" };
+        for (int i = 0; i < 4; i++) {
+            char header[96];
+            if (g_layer_bg_tiles[i] > 0)
+                snprintf(header, sizeof(header), "%s (%d tiles, %d hi-pri)###bg%d",
+                         layer_names[i], g_layer_bg_tiles[i], g_layer_bg_prio1[i], i);
+            else
+                snprintf(header, sizeof(header), "%s###bg%d", layer_names[i], i);
+
+            bool open = ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen);
+
+            /* Eye and Solo buttons on the same line as header */
+            ImGui::SameLine(ImGui::GetWindowWidth() - 90);
+            char eye_id[16]; snprintf(eye_id, sizeof(eye_id), "##eye_bg%d", i);
+            bool vis = (g_visible_layers & (1 << i)) != 0;
+            if (ImGui::Checkbox(eye_id, &vis)) {
+                if (vis) g_visible_layers |= (1 << i);
+                else     g_visible_layers &= ~(1 << i);
+            }
+            ImGui::SameLine();
+            char solo_id[16]; snprintf(solo_id, sizeof(solo_id), "S##bg%d", i);
+            if (ImGui::SmallButton(solo_id)) {
+                g_visible_layers = (1 << i); /* solo: only this layer */
+            }
+
+            if (open) {
+                ImGui::PushID(i);
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Height (Y)", &p->bg_z[i], -10.0f, 30.0f, "%.1f"))
+                    g_editor_dirty = true;
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Depth", &p->bg_depth[i], 0.0f, 20.0f, "%.1f"))
+                    g_editor_dirty = true;
+                ImGui::PopID();
+            }
+        }
+
+        ImGui::Spacing();
+
+        /* == Sprites == */
+        {
+            char header[64];
+            if (g_layer_sprite_count > 0)
+                snprintf(header, sizeof(header), "Sprites (Count: %d)###sprites",
+                         g_layer_sprite_count);
+            else
+                snprintf(header, sizeof(header), "Sprites###sprites");
+
+            bool open = ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen);
+
+            ImGui::SameLine(ImGui::GetWindowWidth() - 90);
+            bool spr_vis = (g_visible_layers & 0x10) != 0;
+            if (ImGui::Checkbox("##eye_spr", &spr_vis)) {
+                if (spr_vis) g_visible_layers |= 0x10;
+                else         g_visible_layers &= ~0x10;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("S##spr")) {
+                g_visible_layers = 0x10; /* solo sprites */
+            }
+
+            if (open) {
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Height (Y)", &p->sprite_z, -10.0f, 30.0f, "%.1f"))
+                    g_editor_dirty = true;
+                ImGui::SetNextItemWidth(200);
+                if (ImGui::SliderFloat("Depth", &p->sprite_depth, 0.0f, 20.0f, "%.1f"))
+                    g_editor_dirty = true;
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Show All Layers")) {
+            g_visible_layers = 0x1F;
+        }
+    }
+    ImGui::End();
+}
+
+/* ── Audio Mixer Window ──────────────────────────────────────────── */
+
+static bool g_channel_muted[8] = {false};
+
+static void draw_audio_window(void) {
+    if (!g_menu.audio_window_open) return;
+    ImGui::SetNextWindowSize(ImVec2(340, 360), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Audio Mixer", &g_menu.audio_window_open)) {
+        ImGui::Text("Master Volume");
+        float vol_pct = g_menu.master_volume * 100.0f;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##master", &vol_pct, 0.0f, 100.0f, "%.0f%%")) {
+            g_menu.master_volume = vol_pct / 100.0f;
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Text("DSP Channels");
+        ImGui::Spacing();
+
+        bool any_muted = false;
+        bool all_muted = true;
+        for (int i = 0; i < 8; i++) {
+            if (g_channel_muted[i]) any_muted = true;
+            else all_muted = false;
+        }
+
+        if (ImGui::Button(all_muted ? "Unmute All" : "Mute All")) {
+            bool new_state = !all_muted;
+            for (int i = 0; i < 8; i++) g_channel_muted[i] = new_state;
+        }
+        ImGui::SameLine();
+        if (any_muted && !all_muted) {
+            if (ImGui::Button("Solo Off")) {
+                for (int i = 0; i < 8; i++) g_channel_muted[i] = false;
+            }
+        }
+        ImGui::Spacing();
+
+        for (int i = 0; i < 8; i++) {
+            char label[32];
+            snprintf(label, sizeof(label), "Ch %d", i + 1);
+
+            bool muted = g_channel_muted[i];
+            if (muted) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+
+            /* Mute toggle */
+            char cb_id[16]; snprintf(cb_id, sizeof(cb_id), "##mute%d", i);
+            bool enabled = !g_channel_muted[i];
+            if (ImGui::Checkbox(cb_id, &enabled)) {
+                g_channel_muted[i] = !enabled;
+            }
+            ImGui::SameLine();
+            ImGui::Text("%s", label);
+
+            /* Solo button */
+            ImGui::SameLine(200);
+            char solo_id[16]; snprintf(solo_id, sizeof(solo_id), "Solo##%d", i);
+            if (ImGui::SmallButton(solo_id)) {
+                for (int j = 0; j < 8; j++) g_channel_muted[j] = (j != i);
+            }
+
+            if (muted) ImGui::PopStyleColor();
+        }
+    }
+    ImGui::End();
+}
+
 /* ── Menu Bar ───────────────────────────────────────────────────── */
 
 static void draw_menu_bar(void) {
@@ -291,12 +505,27 @@ static void draw_menu_bar(void) {
                 if (ImGui::MenuItem("CPU (Software)", NULL, g_menu.renderer_type == 0)) {
                     g_menu.renderer_type = 0;
                 }
-                ImGui::MenuItem("GPU (OpenGL) — coming soon", NULL, false, false);
+                if (ImGui::MenuItem("GPU (OpenGL)", NULL, g_menu.renderer_type == 1)) {
+                    g_menu.renderer_type = 1;
+                }
                 ImGui::EndMenu();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("V-Sync", NULL, g_menu.vsync)) { g_menu.vsync = !g_menu.vsync; }
             if (ImGui::MenuItem("Show FPS", NULL, g_menu.show_fps)) { g_menu.show_fps = !g_menu.show_fps; }
+            ImGui::EndMenu();
+        }
+
+        /* ── Audio ─────────────────────────────────────────────── */
+        if (ImGui::BeginMenu("Audio")) {
+            ImGui::Text("Master Volume");
+            ImGui::SetNextItemWidth(150);
+            float vol_pct = g_menu.master_volume * 100.0f;
+            if (ImGui::SliderFloat("##master_vol", &vol_pct, 0.0f, 100.0f, "%.0f%%")) {
+                g_menu.master_volume = vol_pct / 100.0f;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mixer...")) { g_menu.audio_window_open = true; }
             ImGui::EndMenu();
         }
 
@@ -311,6 +540,28 @@ static void draw_menu_bar(void) {
         /* ── Controls ──────────────────────────────────────────── */
         if (ImGui::BeginMenu("Controls")) {
             if (ImGui::MenuItem("Configure Controls...")) { g_menu.show_controls = true; }
+            ImGui::EndMenu();
+        }
+
+        /* ── Debug ─────────────────────────────────────────────── */
+        if (ImGui::BeginMenu("Debug")) {
+            if (ImGui::MenuItem("Scene Editor", NULL, g_menu.show_scene_editor)) {
+                g_menu.show_scene_editor = !g_menu.show_scene_editor;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Debug Console", NULL, g_menu.show_debug_console)) {
+                g_menu.show_debug_console = !g_menu.show_debug_console;
+#ifdef _WIN32
+                if (g_menu.show_debug_console) {
+                    AllocConsole();
+                    freopen("CONOUT$", "w", stdout);
+                    freopen("CONOUT$", "w", stderr);
+                    SetConsoleTitleA("3dSNES Debug Console");
+                } else {
+                    FreeConsole();
+                }
+#endif
+            }
             ImGui::EndMenu();
         }
 
@@ -377,6 +628,7 @@ extern "C" void menu_init(SDL_Window *window, SDL_Renderer *renderer) {
     memset(&g_menu, 0, sizeof(g_menu));
     g_menu.show_fps = true;
     g_menu.vsync = true;
+    g_menu.master_volume = 1.0f;
     g_menu.rebind_button = -1;
 
     int w, h;
@@ -413,6 +665,8 @@ extern "C" void menu_draw(void) {
     draw_menu_bar();
     draw_about_window();
     draw_controls_window();
+    draw_audio_window();
+    draw_scene_editor();
     draw_toast();
     ImGui::Render();
     ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), g_renderer);
@@ -444,6 +698,25 @@ extern "C" char *menu_get_rom_path(void)           { return g_menu.rom_path; }
 extern "C" void menu_clear_rom_path(void)          { free(g_menu.rom_path); g_menu.rom_path = NULL; }
 extern "C" const SDL_Scancode *menu_get_p1_keys(void) { return g_p1_keys; }
 extern "C" const SDL_Scancode *menu_get_p2_keys(void) { return g_p2_keys; }
+extern "C" void menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name) {
+    g_editor_profile = profile;
+    snprintf(g_editor_profile_path, sizeof(g_editor_profile_path), "%s", path ? path : "");
+    snprintf(g_editor_rom_name, sizeof(g_editor_rom_name), "%s", rom_name ? rom_name : "");
+    g_editor_dirty = false;
+}
+extern "C" bool    menu_profile_dirty(void)               { return g_editor_dirty; }
+extern "C" void    menu_clear_profile_dirty(void)         { g_editor_dirty = false; }
+extern "C" uint8_t menu_get_visible_layers(void)          { return g_visible_layers; }
+extern "C" void    menu_set_layer_info(int bg_tiles[4], int bg_prio1[4], int sprite_count) {
+    for (int i = 0; i < 4; i++) {
+        g_layer_bg_tiles[i] = bg_tiles[i];
+        g_layer_bg_prio1[i] = bg_prio1[i];
+    }
+    g_layer_sprite_count = sprite_count;
+}
+extern "C" float menu_get_master_volume(void)         { return g_menu.master_volume; }
+extern "C" bool  menu_get_channel_muted(int ch)        { return (ch >= 0 && ch < 8) ? g_channel_muted[ch] : false; }
+extern "C" bool  menu_get_debug_console(void)          { return g_menu.show_debug_console; }
 extern "C" void menu_show_toast(const char *msg) {
     snprintf(g_menu.toast_msg, sizeof(g_menu.toast_msg), "%s", msg);
     g_menu.toast_start = SDL_GetTicks();

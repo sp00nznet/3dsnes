@@ -316,7 +316,7 @@ void renderer_draw(Renderer *r, const Camera *cam, int voxel_count) {
     glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
     glViewport(0, 0, r->fbo_width, r->fbo_height);
 
-    glClearColor(0.08f, 0.08f, 0.12f, 1.0f);
+    /* Clear color is set by caller via glClearColor() */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (r->show_3d && voxel_count > 0) {

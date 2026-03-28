@@ -12,6 +12,10 @@
 #include <stdbool.h>
 #include "3dsnes/ppu_extract.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Voxel size in world units (1 pixel = 1.0 unit) */
 #define VOXEL_SIZE 1.0f
 
@@ -58,9 +62,10 @@ void voxel_mesh_clear(VoxelMesh *mesh);
 /*
  * Convert an extracted frame into voxel instances.
  * Uses the profile to determine Z placement of layers.
+ * visible_layers: bitmask — bits 0-3 = BG layers, bit 4 = sprites. 0x1F = all.
  */
 void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
-                    VoxelMesh *mesh);
+                    VoxelMesh *mesh, uint8_t visible_layers);
 
 /* Get the default profile for Zelda: A Link to the Past */
 VoxelProfile voxel_profile_zelda_alttp(void);
@@ -70,5 +75,9 @@ VoxelProfile voxel_profile_smw(void);
 
 /* Get a generic Mode 1 profile (reasonable defaults for any game) */
 VoxelProfile voxel_profile_generic(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* VOXELIZER_H */

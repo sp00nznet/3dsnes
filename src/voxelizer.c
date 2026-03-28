@@ -104,7 +104,8 @@ static bool is_solid_color_layer(const ExtractedFrame *frame, int check_layer) {
 /* Voxelize background tiles with depth extrusion + brightness + priority */
 static void voxelize_bg_tiles(const ExtractedFrame *frame,
                                const VoxelProfile *profile,
-                               VoxelMesh *mesh)
+                               VoxelMesh *mesh,
+                               uint8_t visible_layers)
 {
     float scale = profile->pixel_scale;
     float bright_scale = profile->brightness_depth;
@@ -122,9 +123,10 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
         const ExtractedBgTile *bt = &frame->bg_tiles[i];
         int layer = bt->bg_layer;
 
-        /* Skip layers with zero depth or detected as solid-color fill */
+        /* Skip layers with zero depth, solid-color fill, or hidden by editor */
         if (profile->bg_depth[layer] <= 0.0f) continue;
         if (skip_layer[layer]) continue;
+        if (!(visible_layers & (1 << layer))) continue;
 
         float y_base = profile->bg_z[layer];
         float depth = profile->bg_depth[layer];
@@ -173,8 +175,10 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
 /* Voxelize sprites with uniform depth (no brightness variation — keeps sprites solid) */
 static void voxelize_sprites(const ExtractedFrame *frame,
                               const VoxelProfile *profile,
-                              VoxelMesh *mesh)
+                              VoxelMesh *mesh,
+                              uint8_t visible_layers)
 {
+    if (!(visible_layers & 0x10)) return; /* bit 4 = sprites */
     float scale = profile->pixel_scale;
     float y_base = profile->sprite_z;
     float depth = profile->sprite_depth;
@@ -216,13 +220,13 @@ static void voxelize_sprites(const ExtractedFrame *frame,
 }
 
 void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
-                    VoxelMesh *mesh)
+                    VoxelMesh *mesh, uint8_t visible_layers)
 {
     voxel_mesh_clear(mesh);
     /* Sprites first — they're the most important visual elements
      * (characters, items, projectiles) and must not be cut by voxel cap */
-    voxelize_sprites(frame, profile, mesh);
-    voxelize_bg_tiles(frame, profile, mesh);
+    voxelize_sprites(frame, profile, mesh, visible_layers);
+    voxelize_bg_tiles(frame, profile, mesh, visible_layers);
 }
 
 VoxelProfile voxel_profile_zelda_alttp(void) {
@@ -306,13 +310,13 @@ VoxelProfile voxel_profile_generic(void) {
 
     p.bg_z[0] = 3.0f;     /* main playfield — raised */
     p.bg_z[1] = 0.0f;     /* background — flat behind */
-    p.bg_z[2] = 0.0f;     /* background 2 — flat behind */
-    p.bg_z[3] = 0.0f;     /* background 3 — flat behind */
+    p.bg_z[2] = 12.0f;    /* HUD/overlay — floats above gameplay */
+    p.bg_z[3] = 12.0f;    /* HUD/overlay — floats above gameplay */
 
     p.bg_depth[0] = 5.0f; /* main layer — prominent height */
     p.bg_depth[1] = 2.0f; /* backgrounds — moderate */
-    p.bg_depth[2] = 2.0f;
-    p.bg_depth[3] = 1.0f;
+    p.bg_depth[2] = 1.0f; /* HUD — thin */
+    p.bg_depth[3] = 1.0f; /* HUD — thin */
 
     p.sprite_z = 5.0f;
     p.sprite_depth = 5.0f;

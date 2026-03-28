@@ -1,0 +1,11 @@
+{
+    "rom_name": "THE LEGEND OF ZELDA",
+    "rom_checksum": "0xAF0D",
+    "bg_z": [0.0, 0.0, -1.0, 0.0],
+    "bg_depth": [6.0, 3.0, 1.0, 0.0],
+    "sprite_z": 5.0,
+    "sprite_depth": 6.0,
+    "pixel_scale": 1.00,
+    "brightness_depth": 1.50,
+    "bg_skip_layer": -1
+}
