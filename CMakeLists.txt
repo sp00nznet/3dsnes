@@ -31,15 +31,25 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ext/imgui ext/imgui/backends)
 target_link_libraries(imgui PRIVATE SDL2::SDL2)
 
+# --- Lua 5.4 (scripting engine, vendored) ---
+file(GLOB LUA54_SRC ext/lua54/src/*.c)
+list(FILTER LUA54_SRC EXCLUDE REGEX "(lua|luac)\\.c$")
+add_library(lua54 STATIC ${LUA54_SRC})
+target_include_directories(lua54 PUBLIC ext/lua54/src)
+if(UNIX)
+    target_compile_definitions(lua54 PRIVATE LUA_USE_POSIX)
+endif()
+
 # --- 3dSNES executable ---
 file(GLOB TDSNES_C_SRC src/*.c)
 list(FILTER TDSNES_C_SRC EXCLUDE REGEX "test_emu\\.c$")
 add_executable(3dsnes WIN32 ${TDSNES_C_SRC} src/menu.cpp)
-target_include_directories(3dsnes PRIVATE include ext/LakeSnes ext/glad/include ext)
+target_include_directories(3dsnes PRIVATE include ext/LakeSnes ext/glad/include ext ext/lua54/src)
 target_link_libraries(3dsnes PRIVATE
     lakesnes
     glad
     imgui
+    lua54
     SDL2::SDL2
     SDL2::SDL2main
     OpenGL::GL

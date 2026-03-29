@@ -52,6 +52,7 @@
 #include "3dsnes/renderer.h"
 #include "3dsnes/camera.h"
 #include "3dsnes/menu.h"
+#include "3dsnes/lua_scripting.h"
 #include "stb_image_write.h"
 
 /* ── Globals ─────────────────────────────────────────────────────── */
@@ -76,6 +77,9 @@ static Camera g_camera;
 static VoxelMesh g_voxel_mesh;
 static VoxelProfile g_profile;
 static ExtractedFrame g_extracted;
+
+static LuaScripting g_lua;
+static uint32_t g_lua_reload_timer = 0;  /* throttle hot-reload checks */
 
 static bool g_running = true;
 static bool g_rom_loaded = false;
@@ -436,6 +440,25 @@ static void select_voxel_profile(const char *path, const uint8_t *rom_data, int 
 
     /* Tell the menu about the profile for the scene editor */
     menu_set_profile(&g_profile, g_profile_path, g_rom_internal_name);
+
+    /* Load Lua script if one exists alongside the profile JSON */
+    {
+        char lua_path[512];
+        snprintf(lua_path, sizeof(lua_path), "%s", g_profile_path);
+        /* Replace .json with .lua */
+        char *dot = strrchr(lua_path, '.');
+        if (dot) snprintf(dot, sizeof(lua_path) - (dot - lua_path), ".lua");
+        lua_scripting_unload(&g_lua);
+        if (lua_scripting_load(&g_lua, lua_path)) {
+            g_lua.snes = g_snes;
+            g_lua.profile = &g_profile;
+            g_lua.camera = &g_camera;
+            g_lua.frame = &g_extracted;
+            g_lua.frame_count = 0;
+            lua_scripting_call_start(&g_lua);
+        }
+    }
+
     fflush(stdout);
 }
 
@@ -682,6 +705,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to create SNES instance\n");
         return 1;
     }
+    lua_scripting_init(&g_lua);
 
     snes_setPixelFormat(g_snes, pixelFormatRGBX);
     /* NOTE: do NOT call snes_setPixels here — call it per-frame after snes_runFrame */
@@ -771,6 +795,15 @@ int main(int argc, char *argv[]) {
         /* Process input */
         process_events();
 
+        /* Lua hot-reload check (~1Hz) */
+        {
+            Uint32 now_ticks = SDL_GetTicks();
+            if (g_lua.loaded && now_ticks - g_lua_reload_timer > 1000) {
+                g_lua_reload_timer = now_ticks;
+                lua_scripting_check_reload(&g_lua);
+            }
+        }
+
         /* SNES Mouse: sync device type with menu setting */
         {
             bool mouse_en = menu_get_snes_mouse_enabled();
@@ -855,7 +888,20 @@ int main(int argc, char *argv[]) {
         /* Only extract/voxelize when in 3D mode and not Mode 7 */
         if (show_3d_this_frame) {
             ppu_extract_frame(g_snes->ppu, &g_extracted);
-            voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh, menu_get_visible_layers());
+
+            /* Lua scripting: Update hook + override-aware voxelization */
+            if (g_lua.loaded) {
+                g_lua.frame = &g_extracted;
+                g_lua.frame_count = g_snes->frames;
+                lua_scripting_clear_overrides(&g_lua);
+                lua_scripting_call_update(&g_lua);
+                voxelize_frame_ex(&g_extracted, &g_profile, &g_voxel_mesh,
+                                  menu_get_visible_layers(),
+                                  g_lua.tile_overrides, g_lua.sprite_overrides);
+                lua_scripting_call_late_update(&g_lua);
+            } else {
+                voxelize_frame(&g_extracted, &g_profile, &g_voxel_mesh, menu_get_visible_layers());
+            }
             /* Update layer info for scene editor */
             {
                 int bg_tiles[4] = {0}, bg_prio1[4] = {0};
@@ -1275,6 +1321,7 @@ int main(int argc, char *argv[]) {
     /* ── Cleanup ─────────────────────────────────────────────── */
     menu_shutdown();
     voxel_mesh_free(&g_voxel_mesh);
+    lua_scripting_shutdown(&g_lua);
     soft_renderer_shutdown(&g_soft_renderer);
     shutdown_gpu_renderer();
     snes_free(g_snes);

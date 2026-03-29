@@ -3,6 +3,7 @@
  */
 
 #include "3dsnes/voxelizer.h"
+#include "3dsnes/lua_scripting.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -105,7 +106,8 @@ static bool is_solid_color_layer(const ExtractedFrame *frame, int check_layer) {
 static void voxelize_bg_tiles(const ExtractedFrame *frame,
                                const VoxelProfile *profile,
                                VoxelMesh *mesh,
-                               uint8_t visible_layers)
+                               uint8_t visible_layers,
+                               const TileOverride *tile_overrides)
 {
     float scale = profile->pixel_scale;
     float bright_scale = profile->brightness_depth;
@@ -127,6 +129,17 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
         if (profile->bg_depth[layer] <= 0.0f) continue;
         if (skip_layer[layer]) continue;
         if (!(visible_layers & (1 << layer))) continue;
+
+        /* Lua override: skip hidden tiles */
+        float tile_ox = 0, tile_oy = 0, tile_oz = 0;
+        float tile_alpha_mul = 1.0f;
+        if (tile_overrides && tile_overrides[i].dirty) {
+            if (tile_overrides[i].hidden) continue;
+            tile_ox = tile_overrides[i].offset_x;
+            tile_oy = tile_overrides[i].offset_y;
+            tile_oz = tile_overrides[i].offset_z;
+            tile_alpha_mul = tile_overrides[i].alpha_mul;
+        }
 
         float y_base = profile->bg_z[layer];
         float depth = profile->bg_depth[layer];
@@ -154,20 +167,20 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
                     if (dr*dr + dg*dg + db*db < 900) continue; /* within ~30 of sky color */
                 }
 
-                float wx = (bt->screen_x + col) * scale;
-                float wz = (bt->screen_y + row) * scale;
+                float wx = (bt->screen_x + col) * scale + tile_ox;
+                float wz = (bt->screen_y + row) * scale + tile_oz;
 
                 /* Brightness-based extra depth: bright pixels are taller */
                 float bright = pixel_brightness(px[0], px[1], px[2]);
                 int extra = (int)(bright * bright_scale * base_depth + 0.5f);
                 int total_depth = base_depth + extra;
 
-                /* Apply per-layer alpha multiplier */
-                uint8_t final_alpha = (uint8_t)(px[3] * profile->layer_alpha[layer]);
+                /* Apply per-layer alpha multiplier and Lua override */
+                uint8_t final_alpha = (uint8_t)(px[3] * profile->layer_alpha[layer] * tile_alpha_mul);
 
                 /* Extrude upward (Y+) — same color throughout for clean sides */
                 for (int d = 0; d < total_depth; d++) {
-                    float wy = y_base + d;
+                    float wy = y_base + d + tile_oy;
                     mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
                 }
             }
@@ -258,7 +271,8 @@ static int group_sprites(const ExtractedSprite *sprites, int count, int gap,
 static void voxelize_sprites(const ExtractedFrame *frame,
                               const VoxelProfile *profile,
                               VoxelMesh *mesh,
-                              uint8_t visible_layers)
+                              uint8_t visible_layers,
+                              const SpriteOverride *sprite_overrides)
 {
     if (!(visible_layers & 0x10)) return; /* bit 4 = sprites */
     float scale = profile->pixel_scale;
@@ -321,6 +335,17 @@ static void voxelize_sprites(const ExtractedFrame *frame,
     } else {
         /* ---- Non-grouped sprite rendering (original code) ---- */
         for (int i = 0; i < frame->sprite_count; i++) {
+            /* Lua override: skip hidden sprites */
+            float sp_ox = 0, sp_oy = 0, sp_oz = 0;
+            float sp_alpha_mul = 1.0f;
+            if (sprite_overrides && sprite_overrides[i].dirty) {
+                if (sprite_overrides[i].hidden) continue;
+                sp_ox = sprite_overrides[i].offset_x;
+                sp_oy = sprite_overrides[i].offset_y;
+                sp_oz = sprite_overrides[i].offset_z;
+                sp_alpha_mul = sprite_overrides[i].alpha_mul;
+            }
+
             const ExtractedSprite *sp = &frame->sprites[i];
 
             /* All sprites at same base height -- priority gives slight lift */
@@ -335,11 +360,11 @@ static void voxelize_sprites(const ExtractedFrame *frame,
                     int sy = sp->screen_y + row;
                     if (sx < 0 || sx >= 256 || sy < 0 || sy >= 224) continue;
 
-                    float wx = sx * scale;
-                    float wz = sy * scale;
+                    float wx = sx * scale + sp_ox;
+                    float wz = sy * scale + sp_oz;
 
-                    /* Apply sprite alpha multiplier */
-                    uint8_t final_alpha = (uint8_t)(px[3] * profile->sprite_alpha);
+                    /* Apply sprite alpha multiplier and Lua override */
+                    uint8_t final_alpha = (uint8_t)(px[3] * profile->sprite_alpha * sp_alpha_mul);
 
                     /* Brightness heightmap on sprites too -- faces/highlights pop out */
                     float bright = pixel_brightness(px[0], px[1], px[2]);
@@ -347,7 +372,7 @@ static void voxelize_sprites(const ExtractedFrame *frame,
                     int sprite_h = total_depth + extra;
 
                     for (int d = 0; d < sprite_h; d++) {
-                        float wy = y_off + d;
+                        float wy = y_off + d + sp_oy;
                         mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
                     }
                 }
@@ -359,11 +384,17 @@ static void voxelize_sprites(const ExtractedFrame *frame,
 void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
                     VoxelMesh *mesh, uint8_t visible_layers)
 {
+    voxelize_frame_ex(frame, profile, mesh, visible_layers, NULL, NULL);
+}
+
+void voxelize_frame_ex(const ExtractedFrame *frame, const VoxelProfile *profile,
+                       VoxelMesh *mesh, uint8_t visible_layers,
+                       const TileOverride *tile_overrides,
+                       const SpriteOverride *sprite_overrides)
+{
     voxel_mesh_clear(mesh);
-    /* Sprites first — they're the most important visual elements
-     * (characters, items, projectiles) and must not be cut by voxel cap */
-    voxelize_sprites(frame, profile, mesh, visible_layers);
-    voxelize_bg_tiles(frame, profile, mesh, visible_layers);
+    voxelize_sprites(frame, profile, mesh, visible_layers, sprite_overrides);
+    voxelize_bg_tiles(frame, profile, mesh, visible_layers, tile_overrides);
 }
 
 VoxelProfile voxel_profile_zelda_alttp(void) {

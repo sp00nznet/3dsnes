@@ -87,6 +87,31 @@ void voxel_mesh_clear(VoxelMesh *mesh);
 void voxelize_frame(const ExtractedFrame *frame, const VoxelProfile *profile,
                     VoxelMesh *mesh, uint8_t visible_layers);
 
+/* Per-tile override (set by Lua scripts, consumed by voxelizer) */
+typedef struct TileOverride {
+    float offset_x, offset_y, offset_z;
+    float alpha_mul;    /* 1.0 = no change */
+    bool hidden;
+    bool dirty;         /* any field was modified */
+} TileOverride;
+
+/* Per-sprite override */
+typedef struct SpriteOverride {
+    float offset_x, offset_y, offset_z;
+    float alpha_mul;
+    bool hidden;
+    bool dirty;
+} SpriteOverride;
+
+/*
+ * Voxelize with Lua script overrides applied.
+ * tile_overrides/sprite_overrides may be NULL if no script is active.
+ */
+void voxelize_frame_ex(const ExtractedFrame *frame, const VoxelProfile *profile,
+                       VoxelMesh *mesh, uint8_t visible_layers,
+                       const TileOverride *tile_overrides,
+                       const SpriteOverride *sprite_overrides);
+
 /* Get the default profile for Zelda: A Link to the Past */
 VoxelProfile voxel_profile_zelda_alttp(void);
 
