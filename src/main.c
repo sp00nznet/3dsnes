@@ -26,7 +26,8 @@
  *   F1                 — Toggle 3D/2D mode
  *   F2                 — Toggle 2D overlay
  *   F3                 — Toggle wireframe
- *   F4                 — Capture/release SNES mouse
+ *   F4                 — Capture/release SNES mouse or Super Scope
+ *   T                  — Toggle Super Scope turbo (when captured)
  *   Escape             — Quit
  */
 
@@ -95,6 +96,13 @@ static bool g_load_requested = false;
 static bool g_snes_mouse_captured = false;  /* SDL relative mouse mode active */
 static int  g_snes_mouse_prev_port = 0;     /* track port changes */
 static uint8_t g_snes_mouse_buttons = 0;    /* current button state */
+
+/* Super Scope state */
+static bool g_scope_captured = false;       /* scope mode active (cursor visible) */
+static bool g_scope_prev_enabled = false;   /* track enable changes */
+static uint8_t g_scope_buttons = 0;         /* bit 0=fire, 1=cursor, 2=turbo, 3=pause */
+static int g_scope_mouse_x = 0;             /* raw mouse position in window */
+static int g_scope_mouse_y = 0;
 static char g_state_path[512] = {0};  /* path for save state file */
 static char g_rom_path_current[512] = {0}; /* currently loaded ROM */
 static char g_rom_internal_name[22] = {0}; /* SNES header internal name */
@@ -528,7 +536,10 @@ static void process_events(void) {
             } else if (ev.key.keysym.sym == SDLK_F7) {
                 g_load_requested = true;
             } else if (ev.key.keysym.sym == SDLK_F4) {
-                if (menu_get_snes_mouse_enabled()) {
+                if (menu_get_super_scope_enabled()) {
+                    g_scope_captured = !g_scope_captured;
+                    /* Scope uses absolute position, no relative mouse mode */
+                } else if (menu_get_snes_mouse_enabled()) {
                     g_snes_mouse_captured = !g_snes_mouse_captured;
                     SDL_SetRelativeMouseMode(g_snes_mouse_captured ? SDL_TRUE : SDL_FALSE);
                 }
@@ -541,6 +552,10 @@ static void process_events(void) {
             } else if (ev.key.keysym.sym == SDLK_3) {
                 camera_set_side(&g_camera);
             }
+            /* Super Scope turbo toggle */
+            if (g_scope_captured && ev.key.keysym.sym == SDLK_t) {
+                g_scope_buttons ^= 4; /* toggle turbo */
+            }
             /* Game input only when ImGui doesn't want it */
             if (!imgui_wants)
                 handle_key(ev.key.keysym.sym, true);
@@ -552,7 +567,14 @@ static void process_events(void) {
             break;
 
         case SDL_MOUSEBUTTONDOWN:
-            if (g_snes_mouse_captured) {
+            if (g_scope_captured) {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    g_scope_buttons |= 1;  /* fire */
+                else if (ev.button.button == SDL_BUTTON_RIGHT)
+                    g_scope_buttons |= 2;  /* cursor */
+                else if (ev.button.button == SDL_BUTTON_MIDDLE)
+                    g_scope_buttons |= 8;  /* pause */
+            } else if (g_snes_mouse_captured) {
                 if (ev.button.button == SDL_BUTTON_LEFT)
                     g_snes_mouse_buttons |= 1;
                 else if (ev.button.button == SDL_BUTTON_RIGHT)
@@ -571,6 +593,14 @@ static void process_events(void) {
             break;
 
         case SDL_MOUSEBUTTONUP:
+            if (g_scope_captured) {
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    g_scope_buttons &= ~1;
+                else if (ev.button.button == SDL_BUTTON_RIGHT)
+                    g_scope_buttons &= ~2;
+                else if (ev.button.button == SDL_BUTTON_MIDDLE)
+                    g_scope_buttons &= ~8;
+            }
             if (g_snes_mouse_captured) {
                 if (ev.button.button == SDL_BUTTON_LEFT)
                     g_snes_mouse_buttons &= ~1;
@@ -582,7 +612,10 @@ static void process_events(void) {
             break;
 
         case SDL_MOUSEMOTION:
-            if (g_snes_mouse_captured) {
+            if (g_scope_captured) {
+                g_scope_mouse_x = ev.motion.x;
+                g_scope_mouse_y = ev.motion.y;
+            } else if (g_snes_mouse_captured) {
                 int port = menu_get_snes_mouse_port();
                 snes_setMouseState(g_snes, port,
                     (int16_t)ev.motion.xrel, (int16_t)ev.motion.yrel,
@@ -832,6 +865,38 @@ int main(int argc, char *argv[]) {
                 snes_setMouseState(g_snes, mouse_port, 0, 0,
                     (g_snes_mouse_buttons & 1) != 0,
                     (g_snes_mouse_buttons & 2) != 0);
+            }
+        }
+
+        /* Super Scope: sync device type and send position/buttons */
+        {
+            bool scope_en = menu_get_super_scope_enabled();
+
+            /* Release capture if scope was disabled */
+            if (!scope_en && g_scope_captured) {
+                g_scope_captured = false;
+                g_scope_buttons = 0;
+            }
+
+            /* Update device type on port 2 (Super Scope always port 2) */
+            if (scope_en && !g_scope_prev_enabled) {
+                snes_setInputDevice(g_snes, 2, 3); /* inputDeviceSuperScope */
+            } else if (!scope_en && g_scope_prev_enabled) {
+                snes_setInputDevice(g_snes, 2, 1); /* restore to controller */
+            }
+            g_scope_prev_enabled = scope_en;
+
+            /* Map window mouse position to SNES coordinates and send state */
+            if (g_scope_captured) {
+                int win_w, win_h;
+                SDL_GetWindowSize(g_window, &win_w, &win_h);
+                /* Map window coords to SNES 256x224 */
+                uint16_t sx = (uint16_t)((g_scope_mouse_x * 256) / (win_w > 0 ? win_w : 1));
+                uint16_t sy = (uint16_t)((g_scope_mouse_y * 224) / (win_h > 0 ? win_h : 1));
+                snes_setSuperScopeState(g_snes, sx, sy, g_scope_buttons);
+            } else if (scope_en) {
+                /* Scope enabled but not captured — aim offscreen */
+                snes_setSuperScopeState(g_snes, 0xFFFF, 0xFFFF, 0);
             }
         }
 

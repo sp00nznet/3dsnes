@@ -83,6 +83,9 @@ static struct {
     bool     snes_mouse_enabled;
     int      snes_mouse_port;  /* 1 or 2 */
 
+    /* Super Scope */
+    bool     super_scope_enabled;
+
     /* Rendering */
     bool     fxaa_enabled;
 
@@ -252,6 +255,7 @@ static void draw_controls_window(void) {
         ImGui::Spacing();
 
         if (ImGui::CollapsingHeader("SNES Mouse")) {
+            if (g_menu.super_scope_enabled) ImGui::BeginDisabled();
             ImGui::Checkbox("Enable SNES Mouse", &g_menu.snes_mouse_enabled);
             if (g_menu.snes_mouse_enabled) {
                 ImGui::SameLine();
@@ -262,6 +266,19 @@ static void draw_controls_window(void) {
                 ImGui::SameLine();
                 ImGui::RadioButton("2##mp", &g_menu.snes_mouse_port, 2);
             }
+            if (g_menu.super_scope_enabled) ImGui::EndDisabled();
+        }
+
+        if (ImGui::CollapsingHeader("Super Scope")) {
+            if (g_menu.snes_mouse_enabled) ImGui::BeginDisabled();
+            ImGui::Checkbox("Enable Super Scope", &g_menu.super_scope_enabled);
+            if (g_menu.super_scope_enabled) {
+                ImGui::SameLine();
+                ImGui::Text("(F4 to capture/release)");
+                ImGui::Text("Left click = Fire, Right click = Cursor");
+                ImGui::Text("Middle click = Pause, T = toggle Turbo");
+            }
+            if (g_menu.snes_mouse_enabled) ImGui::EndDisabled();
         }
 
         ImGui::Spacing();
@@ -730,6 +747,7 @@ extern "C" void menu_init(SDL_Window *window, SDL_Renderer *renderer) {
     g_menu.rebind_button = -1;
     g_menu.snes_mouse_enabled = false;
     g_menu.snes_mouse_port = 1;
+    g_menu.super_scope_enabled = false;
 
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
@@ -800,6 +818,7 @@ extern "C" const SDL_Scancode *menu_get_p1_keys(void) { return g_p1_keys; }
 extern "C" const SDL_Scancode *menu_get_p2_keys(void) { return g_p2_keys; }
 extern "C" bool menu_get_snes_mouse_enabled(void) { return g_menu.snes_mouse_enabled; }
 extern "C" int  menu_get_snes_mouse_port(void)    { return g_menu.snes_mouse_port; }
+extern "C" bool menu_get_super_scope_enabled(void) { return g_menu.super_scope_enabled; }
 extern "C" bool menu_get_fxaa_enabled(void)        { return g_menu.fxaa_enabled; }
 extern "C" void menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name) {
     g_editor_profile = profile;

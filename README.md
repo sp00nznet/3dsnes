@@ -25,6 +25,7 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/Lak
 - Full SNES emulation via LakeSnes (CPU, PPU, APU/SPC700, DMA)
 - Full SNES audio with per-channel mute and master volume control
 - SNES Mouse support (for Mario Paint, etc.)
+- Super Scope light gun support (for Super Scope 6, Yoshi's Safari, Battle Clash, etc.)
 - 2-player keyboard input with rebindable keys
 - Save states (F5 save / F7 load)
 - LoROM, HiROM, and ExHiROM cartridge support
@@ -76,7 +77,8 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full compatibility matrix w
 | Tab | Select |
 | Enter | Start |
 | F1 | Toggle 3D / 2D |
-| F4 | Capture / release SNES mouse |
+| F4 | Capture / release SNES mouse or Super Scope |
+| T | Toggle Super Scope turbo (when captured) |
 | F5 | Save state |
 | F7 | Load state |
 | F12 | Screenshot |
