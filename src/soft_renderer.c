@@ -403,10 +403,11 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
         const float vx = v->x; \
         const float vy = v->y; \
         const float vz = v->z; \
+        const float vh = (v->h > 0.0f) ? v->h : 1.0f; \
         /* Quick reject: clip-space bounds check on voxel center. */ \
         { \
             float cx_ = vx + 0.5f; \
-            float cy_ = vy + 0.5f; \
+            float cy_ = vy + vh * 0.5f; \
             float cz_ = vz + 0.5f; \
             Vec4 cc = mat4_transform(mvp, cx_, cy_, cz_); \
             if (cc.w <= 0.0f) break; \
@@ -420,7 +421,7 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
         int all_behind = 1; \
         for (int ci = 0; ci < 8; ci++) { \
             float wx = vx + cube_offsets[ci][0]; \
-            float wy = vy + cube_offsets[ci][1]; \
+            float wy = vy + cube_offsets[ci][1] * vh; \
             float wz = vz + cube_offsets[ci][2]; \
             Vec4 clip = mat4_transform(mvp, wx, wy, wz); \
             if (clip.w > 0.001f) all_behind = 0; \
@@ -447,7 +448,7 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
             if (smax_x < 0 || smin_x >= W || smax_y < 0 || smin_y >= H) break; \
         } \
         float cx_ = vx + 0.5f; \
-        float cy_ = vy + 0.5f; \
+        float cy_ = vy + vh * 0.5f; \
         float cz_ = vz + 0.5f; \
         float vdx = eye_x - cx_; \
         float vdy = eye_y - cy_; \
@@ -503,7 +504,7 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
                 for (int vi = 0; vi < count; vi++) {
                     if (voxels[vi].a > 0 && voxels[vi].a < 255) {
                         float dx = (voxels[vi].x + 0.5f) - eye_x;
-                        float dy = (voxels[vi].y + 0.5f) - eye_y;
+                        float dy = (voxels[vi].y + voxels[vi].h * 0.5f) - eye_y;
                         float dz = (voxels[vi].z + 0.5f) - eye_z;
                         trans_idx[ti] = vi;
                         trans_dist[ti] = dx * dx + dy * dy + dz * dz;
@@ -555,7 +556,7 @@ void soft_renderer_draw(SoftRenderer *r, const Camera *cam,
             if (vy <= r->shadow_y) continue; /* below ground, no shadow */
 
             /* Project voxel center onto ground plane along light direction */
-            float t = (vy + 0.5f - r->shadow_y) / ly;
+            float t = (vy + v->h * 0.5f - r->shadow_y) / ly;
             float shadow_x = v->x + 0.5f - r->light_dir[0] * t;
             float shadow_z = v->z + 0.5f - r->light_dir[2] * t;
 

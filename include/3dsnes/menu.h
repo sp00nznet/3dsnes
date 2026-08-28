@@ -81,6 +81,9 @@ bool menu_get_super_scope_enabled(void);
 
 /* Rendering features */
 bool menu_get_fxaa_enabled(void);
+int  menu_get_render_scale(void);
+void menu_set_render_scale(int s);
+bool menu_get_render_scale_changed(void);
 
 #ifdef __cplusplus
 }

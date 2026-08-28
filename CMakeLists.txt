@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(3dsnes C CXX)
 
+# Version string — CI passes the git tag; local builds say "dev".
+if(NOT TDSNES_VERSION)
+    set(TDSNES_VERSION "dev")
+endif()
+add_compile_definitions(TDSNES_VERSION="${TDSNES_VERSION}")
+
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)

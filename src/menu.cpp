@@ -88,6 +88,8 @@ static struct {
 
     /* Rendering */
     bool     fxaa_enabled;
+    int      render_scale;         /* 3D internal render multiplier of 256x224 */
+    bool     render_scale_changed;
 
     /* Toast */
     char     toast_msg[256];
@@ -167,7 +169,7 @@ static void draw_about_window(void) {
     ImGui::SetNextWindowPos(ImVec2(200, 150), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("About 3dSNES", &g_menu.show_about, ImGuiWindowFlags_NoCollapse)) {
         ImGui::Spacing();
-        ImGui::Text("3dSNES  v0.1");
+        ImGui::Text("3dSNES  %s", TDSNES_VERSION);
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::Text("A free, open-source 3D voxel renderer");
@@ -576,6 +578,7 @@ static void draw_audio_window(void) {
 static void draw_menu_bar(void) {
     g_menu.view_preset = 0;
     g_menu.scale_changed = false;
+    g_menu.render_scale_changed = false;
 
     if (ImGui::BeginMainMenuBar()) {
         /* ── File ──────────────────────────────────────────────── */
@@ -621,6 +624,16 @@ static void draw_menu_bar(void) {
                 }
                 if (ImGui::MenuItem("GPU (OpenGL)", NULL, g_menu.renderer_type == 1)) {
                     g_menu.renderer_type = 1;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("3D Render Scale")) {
+                const char *labels[] = { "1x (256x224) - fastest", "2x (512x448)", "3x (768x672)", "4x (1024x896) - sharpest" };
+                for (int i = 0; i < 4; i++) {
+                    if (ImGui::MenuItem(labels[i], NULL, g_menu.render_scale == i + 1)) {
+                        g_menu.render_scale = i + 1;
+                        g_menu.render_scale_changed = true;
+                    }
                 }
                 ImGui::EndMenu();
             }
@@ -751,6 +764,7 @@ extern "C" void menu_init(SDL_Window *window, SDL_Renderer *renderer) {
 
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
+    g_menu.render_scale = 3;
     g_menu.scale_factor = (w + 127) / 256;
     if (g_menu.scale_factor < 2) g_menu.scale_factor = 2;
     if (g_menu.scale_factor > 5) g_menu.scale_factor = 5;
@@ -820,6 +834,9 @@ extern "C" bool menu_get_snes_mouse_enabled(void) { return g_menu.snes_mouse_ena
 extern "C" int  menu_get_snes_mouse_port(void)    { return g_menu.snes_mouse_port; }
 extern "C" bool menu_get_super_scope_enabled(void) { return g_menu.super_scope_enabled; }
 extern "C" bool menu_get_fxaa_enabled(void)        { return g_menu.fxaa_enabled; }
+extern "C" int  menu_get_render_scale(void)        { return g_menu.render_scale; }
+extern "C" void menu_set_render_scale(int s)       { g_menu.render_scale = s; }
+extern "C" bool menu_get_render_scale_changed(void){ return g_menu.render_scale_changed; }
 extern "C" void menu_set_profile(VoxelProfile *profile, const char *path, const char *rom_name) {
     g_editor_profile = profile;
     snprintf(g_editor_profile_path, sizeof(g_editor_profile_path), "%s", path ? path : "");

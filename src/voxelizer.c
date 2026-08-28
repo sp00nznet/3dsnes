@@ -26,7 +26,7 @@ void voxel_mesh_clear(VoxelMesh *mesh) {
     mesh->count = 0;
 }
 
-static void mesh_push(VoxelMesh *mesh, float x, float y, float z,
+static void mesh_push(VoxelMesh *mesh, float x, float y, float z, float h,
                        uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (mesh->count >= mesh->capacity) {
@@ -37,6 +37,7 @@ static void mesh_push(VoxelMesh *mesh, float x, float y, float z,
     v->x = x;
     v->y = y;
     v->z = z;
+    v->h = h;
     v->r = r;
     v->g = g;
     v->b = b;
@@ -178,11 +179,11 @@ static void voxelize_bg_tiles(const ExtractedFrame *frame,
                 /* Apply per-layer alpha multiplier and Lua override */
                 uint8_t final_alpha = (uint8_t)(px[3] * profile->layer_alpha[layer] * tile_alpha_mul);
 
-                /* Extrude upward (Y+) — same color throughout for clean sides */
-                for (int d = 0; d < total_depth; d++) {
-                    float wy = y_base + d + tile_oy;
-                    mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
-                }
+                /* Extrude upward (Y+) as ONE stretched box. The column is a single
+                 * colour, so the interior cubes were never visible — emitting them
+                 * cost ~6x the triangles for identical pixels. */
+                mesh_push(mesh, wx, y_base + tile_oy, wz, (float)total_depth,
+                          px[0], px[1], px[2], final_alpha);
             }
         }
     }
@@ -324,10 +325,8 @@ static void voxelize_sprites(const ExtractedFrame *frame,
 
                         uint8_t final_alpha = (uint8_t)(px[3] * profile->sprite_alpha);
 
-                        for (int d = 0; d < sprite_h; d++) {
-                            float wy = y_off + d;
-                            mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
-                        }
+                        mesh_push(mesh, wx, y_off, wz, (float)sprite_h,
+                                  px[0], px[1], px[2], final_alpha);
                     }
                 }
             }
@@ -371,10 +370,8 @@ static void voxelize_sprites(const ExtractedFrame *frame,
                     int extra = (int)(bright * bright_scale * total_depth * 0.5f + 0.5f);
                     int sprite_h = total_depth + extra;
 
-                    for (int d = 0; d < sprite_h; d++) {
-                        float wy = y_off + d + sp_oy;
-                        mesh_push(mesh, wx, wy, wz, px[0], px[1], px[2], final_alpha);
-                    }
+                    mesh_push(mesh, wx, y_off + sp_oy, wz, (float)sprite_h,
+                              px[0], px[1], px[2], final_alpha);
                 }
             }
         }

@@ -27,7 +27,8 @@ extern "C" {
 
 /* A single voxel instance for GPU instanced rendering */
 typedef struct {
-    float x, y, z;       /* world position */
+    float x, y, z;       /* world position (min corner) */
+    float h;             /* height in Y units — a merged extrusion column */
     uint8_t r, g, b, a;  /* color */
 } VoxelInstance;
 

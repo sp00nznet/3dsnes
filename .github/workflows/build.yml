@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Version from tag
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install SDL2 (vcpkg)
+        run: vcpkg install sdl2:x64-windows
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -A x64
+          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DTDSNES_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Build
+        run: cmake --build build --config Release --target 3dsnes
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/3dsnes
+          cp build/Release/3dsnes.exe build/Release/SDL2.dll dist/3dsnes/
+          cp README.md COMPATIBILITY.md LICENSE dist/3dsnes/
+          cp -r profiles dist/3dsnes/
+          cd dist && 7z a -tzip "3dsnes-${{ steps.ver.outputs.version }}-win64.zip" 3dsnes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dsnes-win64
+          path: dist/*.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

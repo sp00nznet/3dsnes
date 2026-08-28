@@ -17,7 +17,7 @@ static const char *voxel_vert_src =
     "#version 330 core\n"
     "layout(location = 0) in vec3 a_pos;\n"         /* unit cube vertex */
     "layout(location = 1) in vec3 a_normal;\n"       /* cube face normal */
-    "layout(location = 2) in vec3 a_inst_pos;\n"     /* instance world pos */
+    "layout(location = 2) in vec4 a_inst_pos;\n"     /* instance world pos + height in .w */
     "layout(location = 3) in vec4 a_inst_color;\n"   /* instance RGBA (0-1) */
     "\n"
     "uniform mat4 u_view;\n"
@@ -27,7 +27,7 @@ static const char *voxel_vert_src =
     "out vec4 v_color;\n"
     "\n"
     "void main() {\n"
-    "    vec3 world_pos = a_pos + a_inst_pos;\n"
+    "    vec3 world_pos = a_pos * vec3(1.0, a_inst_pos.w, 1.0) + a_inst_pos.xyz;\n"
     "    gl_Position = u_proj * u_view * vec4(world_pos, 1.0);\n"
     "    v_normal = a_normal;\n"
     "    v_color = a_inst_color;\n"
@@ -162,17 +162,17 @@ bool renderer_init(Renderer *r, int width, int height) {
     r->instance_capacity = 200000;
     glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
     glBufferData(GL_ARRAY_BUFFER,
-                 r->instance_capacity * (3 * sizeof(float) + 4 * sizeof(float)),
+                 r->instance_capacity * 8 * sizeof(float),
                  NULL, GL_DYNAMIC_DRAW);
 
-    /* attrib 2: instance position (vec3) */
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+    /* attrib 2: instance position + height (vec4) */
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(2);
     glVertexAttribDivisor(2, 1);
 
     /* attrib 3: instance color (vec4) */
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                          (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
+                          (void*)(4 * sizeof(float)));
     glEnableVertexAttribArray(3);
     glVertexAttribDivisor(3, 1);
 
@@ -282,24 +282,25 @@ void renderer_upload_voxels(Renderer *r, const VoxelMesh *mesh) {
     if (count > r->upload_buf_capacity) {
         r->upload_buf_capacity = count + 10000;
         free(r->upload_buf);
-        r->upload_buf = (float *)malloc(r->upload_buf_capacity * 7 * sizeof(float));
+        r->upload_buf = (float *)malloc(r->upload_buf_capacity * 8 * sizeof(float));
     }
 
-    /* Pack instance data: [x, y, z, r, g, b, a] as floats */
+    /* Pack instance data: [x, y, z, h, r, g, b, a] as floats */
     float *data = r->upload_buf;
     for (int i = 0; i < count; i++) {
         const VoxelInstance *v = &mesh->instances[i];
-        data[i * 7 + 0] = v->x;
-        data[i * 7 + 1] = v->y;
-        data[i * 7 + 2] = v->z;
-        data[i * 7 + 3] = v->r / 255.0f;
-        data[i * 7 + 4] = v->g / 255.0f;
-        data[i * 7 + 5] = v->b / 255.0f;
-        data[i * 7 + 6] = v->a / 255.0f;
+        data[i * 8 + 0] = v->x;
+        data[i * 8 + 1] = v->y;
+        data[i * 8 + 2] = v->z;
+        data[i * 8 + 3] = (v->h > 0.0f) ? v->h : 1.0f;
+        data[i * 8 + 4] = v->r / 255.0f;
+        data[i * 8 + 5] = v->g / 255.0f;
+        data[i * 8 + 6] = v->b / 255.0f;
+        data[i * 8 + 7] = v->a / 255.0f;
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, r->instance_vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, count * 7 * sizeof(float), data);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, count * 8 * sizeof(float), data);
     /* No free — buffer is reused across frames */
 }
 

@@ -657,8 +657,14 @@ static void process_events(void) {
 int main(int argc, char *argv[]) {
     const char *rom_path = (argc >= 2 && argv[1][0] != '-') ? argv[1] : NULL;
     bool test_mode = false;
+    int render_scale = 3;   /* 3D internal resolution multiplier of 256x224 */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--test") == 0) test_mode = true;
+        else if (strcmp(argv[i], "--render-scale") == 0 && i + 1 < argc) {
+            render_scale = atoi(argv[++i]);
+            if (render_scale < 1) render_scale = 1;
+            if (render_scale > 4) render_scale = 4;
+        }
     }
     if (test_mode && !rom_path) {
         fprintf(stderr, "Usage: 3dsnes <rom.sfc> --test\n");
@@ -708,15 +714,17 @@ int main(int argc, char *argv[]) {
         }
     }
     fflush(stdout);
-    /* 3D texture at half resolution for performance — SDL_RenderCopy upscales */
-    /* 3D renders at SNES native resolution for correct aspect ratio, SDL upscales */
-    int render_w = 256, render_h = 224;
+    /* 3D internal render target. Voxels are ~1 SNES pixel wide, so at 1x each cube
+     * is sub-pixel and the rasterizer drops most of them — the frame comes out as
+     * speckled noise. Scale up so every voxel covers several pixels. */
+    int render_w = 256 * render_scale, render_h = 224 * render_scale;
     g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, render_w, render_h);
     /* 2D texture at native SNES resolution — we extract the active 256x224 area */
     g_sdl_texture_2d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBX8888, SDL_TEXTUREACCESS_STREAMING, 256, 224);
 
     /* Initialize ImGui menu system */
     menu_init(g_window, g_sdl_renderer);
+    menu_set_render_scale(render_scale);
 
     /* ── Initialize audio ────────────────────────────────────── */
     SDL_AudioSpec want, have;
@@ -1120,15 +1128,201 @@ int main(int argc, char *argv[]) {
                 fflush(stdout);
             }
 
+        } /* end if (g_rom_loaded) — diagnostics + test mode */
+
+        /* ── FPS tracking ──────────────────────────────────────── */
+        {
+            static Uint32 fps_last = 0;
+            static int fps_frames = 0;
+            fps_frames++;
+            Uint32 now = SDL_GetTicks();
+            if (now - fps_last >= 1000) {
+                menu_set_fps((float)fps_frames * 1000.0f / (float)(now - fps_last));
+                fps_frames = 0;
+                fps_last = now;
+            }
+        }
+
+        /* Sync state with menu */
+        g_show_3d = menu_get_3d_enabled();
+        menu_set_voxel_count(g_voxel_mesh.count);
+
+        /* Handle menu view presets */
+        switch (menu_get_view_preset()) {
+            case 1: camera_set_topdown(&g_camera); break;
+            case 2: camera_set_isometric(&g_camera); break;
+            case 3: camera_set_side(&g_camera); break;
+        }
+
+        /* Handle 3D render scale change — resize soft renderer + streaming texture */
+        if (menu_get_render_scale_changed()) {
+            render_scale = menu_get_render_scale();
+            render_w = 256 * render_scale;
+            render_h = 224 * render_scale;
+            soft_renderer_resize(&g_soft_renderer, render_w, render_h);
+            SDL_DestroyTexture(g_sdl_texture_3d);
+            g_sdl_texture_3d = SDL_CreateTexture(g_sdl_renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                 SDL_TEXTUREACCESS_STREAMING, render_w, render_h);
+        }
+
+        /* Handle scale change */
+        if (menu_get_scale_changed()) {
+            int s = menu_get_scale_factor();
+            SDL_SetWindowSize(g_window, 256 * s, 224 * s);
+            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        }
+
+        /* Handle quit */
+        if (menu_quit_requested()) {
+            g_running = false;
+        }
+
+        /* Handle save/load state (from menu or hotkey) */
+        if (g_rom_loaded && (menu_save_requested() || g_save_requested)) {
+            do_save_state();
+            menu_clear_save_request();
+            g_save_requested = false;
+        }
+        if (g_rom_loaded && (menu_load_requested() || g_load_requested)) {
+            do_load_state();
+            menu_clear_load_request();
+            g_load_requested = false;
+        }
+
+        /* Handle ROM loading from File -> Load ROM */
+        {
+            char *new_rom = menu_get_rom_path();
+            if (new_rom) {
+                load_new_rom(new_rom);
+                menu_clear_rom_path();
+            }
+        }
+
+        /* Auto-save profile when scene editor modifies it (1-second debounce) */
+        if (g_rom_loaded && menu_profile_dirty()) {
+            static Uint32 last_dirty = 0;
+            Uint32 now_ms = SDL_GetTicks();
+            if (last_dirty == 0) last_dirty = now_ms;
+            if (now_ms - last_dirty >= 1000) {
+                profile_save_json(g_profile_path, &g_profile,
+                                  g_rom_internal_name, g_rom_checksum);
+                menu_clear_profile_dirty();
+                menu_show_toast("Profile saved");
+                last_dirty = 0;
+            }
+        }
+
+        /* Handle renderer type switch */
+        {
+            int rtype = menu_get_renderer_type();
+            bool want_gpu = (rtype == 1);
+            if (want_gpu != !g_use_software) {
+                if (want_gpu) {
+                    if (init_gpu_renderer(render_w, render_h)) {
+                        g_use_software = false;
+                    } else {
+                        /* Failed — revert menu to CPU */
+                        g_use_software = true;
+                    }
+                } else {
+                    g_use_software = true;
+                    menu_show_toast("CPU renderer active");
+                }
+            }
+        }
+
+        /* Render and display */
+        SDL_RenderClear(g_sdl_renderer);
+
+        if (g_rom_loaded) {
+        if (show_3d_this_frame) {
+            /* Sync profile rendering settings to software renderer */
+            soft_renderer_set_lighting(&g_soft_renderer,
+                g_profile.light_dir[0], g_profile.light_dir[1], g_profile.light_dir[2],
+                g_profile.ambient, g_profile.diffuse);
+            g_soft_renderer.shadows_enabled = g_profile.shadows_enabled;
+            g_soft_renderer.shadow_opacity = g_profile.shadow_opacity;
+            g_soft_renderer.shadow_y = g_profile.shadow_y;
+            g_soft_renderer.fxaa_enabled = menu_get_fxaa_enabled();
+            g_soft_renderer.sky_type = g_profile.sky_type;
+            g_soft_renderer.sky_top_r = g_profile.sky_top[0];
+            g_soft_renderer.sky_top_g = g_profile.sky_top[1];
+            g_soft_renderer.sky_top_b = g_profile.sky_top[2];
+            g_soft_renderer.sky_bot_r = g_profile.sky_bot[0];
+            g_soft_renderer.sky_bot_g = g_profile.sky_bot[1];
+            g_soft_renderer.sky_bot_b = g_profile.sky_bot[2];
+
+            if (g_use_software) {
+                soft_renderer_draw(&g_soft_renderer, &g_camera,
+                                   g_voxel_mesh.instances, g_voxel_mesh.count);
+                const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
+                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
+                                  g_soft_renderer.width * 4);
+            } else if (g_gpu_renderer_ready) {
+                SDL_GL_MakeCurrent(g_gl_window, g_gl_context);
+                renderer_upload_voxels(&g_gpu_renderer, &g_voxel_mesh);
+                /* Upload 2D framebuffer for overlay mode */
+                renderer_upload_framebuffer(&g_gpu_renderer, g_pixel_buf, 512, 480);
+                g_gpu_renderer.show_3d = true;
+                g_gpu_renderer.show_overlay = g_show_overlay;
+                /* Set clear color from sky */
+                glClearColor(g_soft_renderer.clear_r / 255.0f,
+                             g_soft_renderer.clear_g / 255.0f,
+                             g_soft_renderer.clear_b / 255.0f, 1.0f);
+                renderer_draw(&g_gpu_renderer, &g_camera, g_voxel_mesh.count);
+                const uint8_t *rendered = renderer_readback(&g_gpu_renderer);
+                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
+                                  g_gpu_renderer.fbo_width * 4);
+            }
+            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_3d, NULL, NULL);
+        } else {
+            /* 2D SNES framebuffer — extract 256x224 active area from 512x480 PPU output.
+             * PPU buffer: 512px wide (doubled), 480 lines. Active starts at line 16.
+             * Each pixel is doubled horizontally (512 → 256 real pixels). */
+            static uint8_t active_buf[256 * 224 * 4];
+            for (int y = 0; y < 224; y++) {
+                const uint8_t *src = g_pixel_buf + (y * 2 + 16) * 512 * 4;
+                uint8_t *dst = active_buf + y * 256 * 4;
+                for (int x = 0; x < 256; x++) {
+                    /* Take every other pixel (skip the doubled pixel) */
+                    memcpy(dst + x * 4, src + x * 2 * 4, 4);
+                }
+            }
+            SDL_UpdateTexture(g_sdl_texture_2d, NULL, active_buf, 256 * 4);
+            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_2d, NULL, NULL);
+        }
+        } /* end if (g_rom_loaded) — game rendering */
+
+        /* Draw ImGui menu bar on top of everything */
+        menu_draw();
+
+        SDL_RenderPresent(g_sdl_renderer);
+
+        /* Screenshot after present so menu is captured too */
+        if (menu_screenshot_requested()) {
+            take_screenshot(g_sdl_renderer, g_window);
+            menu_clear_screenshot_request();
+        }
+
         /* ── Test mode: multi-stage screenshot + diagnostics ───── */
-        if (test_mode) {
-            static Uint32 test_start = 0;
+        if (test_mode && g_rom_loaded) {
             static int test_stage = 0;
             static float test_fps_2d = 0, test_fps_3d = 0;
             static bool test_mode7_seen = false;
-            if (test_start == 0) test_start = SDL_GetTicks();
-            Uint32 elapsed = SDL_GetTicks() - test_start;
+            /* Stage on EMULATED frames, not wall-clock: the emulator is time-decoupled
+             * from rendering, so a wall-clock schedule lands on a different game state
+             * every run and the corpus stops being comparable. */
+            uint32_t elapsed = (uint32_t)(g_snes->frames * 1000 / 60);
             if (mode7_active) test_mode7_seen = true;
+
+            /* Attract screens are boring and most of them are not even 3D. Pulse
+             * Start (then A) so games walk into an actual gameplay frame. */
+            {
+                uint32_t f = g_snes->frames % 180;
+                snes_setButtonState(g_snes, 1, 3 /*Start*/, f < 8);
+                snes_setButtonState(g_snes, 1, 0 /*B*/,     f >= 60 && f < 68);
+                snes_setButtonState(g_snes, 1, 8 /*A*/,     f >= 120 && f < 128);
+            }
 
             /* Stage 0: 8s — 2D boot screenshot */
             if (test_stage == 0 && elapsed >= 8000) {
@@ -1215,169 +1409,6 @@ int main(int argc, char *argv[]) {
                 fflush(stdout);
                 g_running = false;
             }
-        }
-        } /* end if (g_rom_loaded) — diagnostics + test mode */
-
-        /* ── FPS tracking ──────────────────────────────────────── */
-        {
-            static Uint32 fps_last = 0;
-            static int fps_frames = 0;
-            fps_frames++;
-            Uint32 now = SDL_GetTicks();
-            if (now - fps_last >= 1000) {
-                menu_set_fps((float)fps_frames * 1000.0f / (float)(now - fps_last));
-                fps_frames = 0;
-                fps_last = now;
-            }
-        }
-
-        /* Sync state with menu */
-        g_show_3d = menu_get_3d_enabled();
-        menu_set_voxel_count(g_voxel_mesh.count);
-
-        /* Handle menu view presets */
-        switch (menu_get_view_preset()) {
-            case 1: camera_set_topdown(&g_camera); break;
-            case 2: camera_set_isometric(&g_camera); break;
-            case 3: camera_set_side(&g_camera); break;
-        }
-
-        /* Handle scale change */
-        if (menu_get_scale_changed()) {
-            int s = menu_get_scale_factor();
-            SDL_SetWindowSize(g_window, 256 * s, 224 * s);
-            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        }
-
-        /* Handle quit */
-        if (menu_quit_requested()) {
-            g_running = false;
-        }
-
-        /* Handle save/load state (from menu or hotkey) */
-        if (g_rom_loaded && (menu_save_requested() || g_save_requested)) {
-            do_save_state();
-            menu_clear_save_request();
-            g_save_requested = false;
-        }
-        if (g_rom_loaded && (menu_load_requested() || g_load_requested)) {
-            do_load_state();
-            menu_clear_load_request();
-            g_load_requested = false;
-        }
-
-        /* Handle ROM loading from File -> Load ROM */
-        {
-            char *new_rom = menu_get_rom_path();
-            if (new_rom) {
-                load_new_rom(new_rom);
-                menu_clear_rom_path();
-            }
-        }
-
-        /* Auto-save profile when scene editor modifies it (1-second debounce) */
-        if (g_rom_loaded && menu_profile_dirty()) {
-            static Uint32 last_dirty = 0;
-            Uint32 now_ms = SDL_GetTicks();
-            if (last_dirty == 0) last_dirty = now_ms;
-            if (now_ms - last_dirty >= 1000) {
-                profile_save_json(g_profile_path, &g_profile,
-                                  g_rom_internal_name, g_rom_checksum);
-                menu_clear_profile_dirty();
-                menu_show_toast("Profile saved");
-                last_dirty = 0;
-            }
-        }
-
-        /* Handle renderer type switch */
-        {
-            int rtype = menu_get_renderer_type();
-            bool want_gpu = (rtype == 1);
-            if (want_gpu != !g_use_software) {
-                if (want_gpu) {
-                    if (init_gpu_renderer(256, 224)) {
-                        g_use_software = false;
-                    } else {
-                        /* Failed — revert menu to CPU */
-                        g_use_software = true;
-                    }
-                } else {
-                    g_use_software = true;
-                    menu_show_toast("CPU renderer active");
-                }
-            }
-        }
-
-        /* Render and display */
-        SDL_RenderClear(g_sdl_renderer);
-
-        if (g_rom_loaded) {
-        if (show_3d_this_frame) {
-            /* Sync profile rendering settings to software renderer */
-            soft_renderer_set_lighting(&g_soft_renderer,
-                g_profile.light_dir[0], g_profile.light_dir[1], g_profile.light_dir[2],
-                g_profile.ambient, g_profile.diffuse);
-            g_soft_renderer.shadows_enabled = g_profile.shadows_enabled;
-            g_soft_renderer.shadow_opacity = g_profile.shadow_opacity;
-            g_soft_renderer.shadow_y = g_profile.shadow_y;
-            g_soft_renderer.fxaa_enabled = menu_get_fxaa_enabled();
-            g_soft_renderer.sky_type = g_profile.sky_type;
-            g_soft_renderer.sky_top_r = g_profile.sky_top[0];
-            g_soft_renderer.sky_top_g = g_profile.sky_top[1];
-            g_soft_renderer.sky_top_b = g_profile.sky_top[2];
-            g_soft_renderer.sky_bot_r = g_profile.sky_bot[0];
-            g_soft_renderer.sky_bot_g = g_profile.sky_bot[1];
-            g_soft_renderer.sky_bot_b = g_profile.sky_bot[2];
-
-            if (g_use_software) {
-                soft_renderer_draw(&g_soft_renderer, &g_camera,
-                                   g_voxel_mesh.instances, g_voxel_mesh.count);
-                const uint8_t *rendered = soft_renderer_pixels(&g_soft_renderer);
-                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered,
-                                  g_soft_renderer.width * 4);
-            } else if (g_gpu_renderer_ready) {
-                SDL_GL_MakeCurrent(g_gl_window, g_gl_context);
-                renderer_upload_voxels(&g_gpu_renderer, &g_voxel_mesh);
-                /* Upload 2D framebuffer for overlay mode */
-                renderer_upload_framebuffer(&g_gpu_renderer, g_pixel_buf, 512, 480);
-                g_gpu_renderer.show_3d = true;
-                g_gpu_renderer.show_overlay = g_show_overlay;
-                /* Set clear color from sky */
-                glClearColor(g_soft_renderer.clear_r / 255.0f,
-                             g_soft_renderer.clear_g / 255.0f,
-                             g_soft_renderer.clear_b / 255.0f, 1.0f);
-                renderer_draw(&g_gpu_renderer, &g_camera, g_voxel_mesh.count);
-                const uint8_t *rendered = renderer_readback(&g_gpu_renderer);
-                SDL_UpdateTexture(g_sdl_texture_3d, NULL, rendered, 256 * 4);
-            }
-            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_3d, NULL, NULL);
-        } else {
-            /* 2D SNES framebuffer — extract 256x224 active area from 512x480 PPU output.
-             * PPU buffer: 512px wide (doubled), 480 lines. Active starts at line 16.
-             * Each pixel is doubled horizontally (512 → 256 real pixels). */
-            static uint8_t active_buf[256 * 224 * 4];
-            for (int y = 0; y < 224; y++) {
-                const uint8_t *src = g_pixel_buf + (y * 2 + 16) * 512 * 4;
-                uint8_t *dst = active_buf + y * 256 * 4;
-                for (int x = 0; x < 256; x++) {
-                    /* Take every other pixel (skip the doubled pixel) */
-                    memcpy(dst + x * 4, src + x * 2 * 4, 4);
-                }
-            }
-            SDL_UpdateTexture(g_sdl_texture_2d, NULL, active_buf, 256 * 4);
-            SDL_RenderCopy(g_sdl_renderer, g_sdl_texture_2d, NULL, NULL);
-        }
-        } /* end if (g_rom_loaded) — game rendering */
-
-        /* Draw ImGui menu bar on top of everything */
-        menu_draw();
-
-        SDL_RenderPresent(g_sdl_renderer);
-
-        /* Screenshot after present so menu is captured too */
-        if (menu_screenshot_requested()) {
-            take_screenshot(g_sdl_renderer, g_window);
-            menu_clear_screenshot_request();
         }
 
         if (!g_rom_loaded) SDL_Delay(16); /* ~60fps idle when no ROM */
