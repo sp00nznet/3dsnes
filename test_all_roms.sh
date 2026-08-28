@@ -2,12 +2,13 @@
 set +H  # disable history expansion (! in filenames)
 
 # test_all_roms.sh — Sequential ROM testing. No background processes.
-# Each game runs ~45 seconds in foreground, takes 6 screenshots + JSON diagnostic.
-# Total time: ~375 games * 45s = ~4.5 hours
+# Each game runs ~15 seconds in foreground, takes 6 screenshots + JSON diagnostic.
+# Total time: ~375 games * 15s = ~1.6 hours
+# Override ROMDIR/EMUDIR/OUTDIR from the environment. LIMIT=N tests only the first N.
 
-ROMDIR="Z:/Roms/SNES"
-EMUDIR="E:/3dsnes/build/Release"
-OUTDIR="E:/3dsnes/test_results"
+ROMDIR="${ROMDIR:-X:/Roms/Nintendo SNES}"
+EMUDIR="${EMUDIR:-F:/projects/tools/3dsnes/build/Release}"
+OUTDIR="${OUTDIR:-F:/projects/tools/3dsnes/test_results}"
 MANIFEST="$OUTDIR/manifest.txt"
 
 mkdir -p "$OUTDIR"
@@ -20,7 +21,11 @@ echo "Output: $OUTDIR"
 # Build ROM list
 find "$ROMDIR" -type f -iname "*(U)*\[!\]*.zip" | sort > "$OUTDIR/romlist.txt"
 total=$(wc -l < "$OUTDIR/romlist.txt")
-echo "Found $total ROMs (est. $(( total * 45 / 60 )) minutes)"
+if [ -n "$LIMIT" ]; then
+    head -n "$LIMIT" "$OUTDIR/romlist.txt" > "$OUTDIR/romlist.tmp" && mv "$OUTDIR/romlist.tmp" "$OUTDIR/romlist.txt"
+    total=$(wc -l < "$OUTDIR/romlist.txt")
+fi
+echo "Found $total ROMs (est. $(( total * 15 / 60 )) minutes)"
 echo ""
 
 rom_count=0

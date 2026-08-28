@@ -920,6 +920,12 @@ int main(int argc, char *argv[]) {
         if (elapsed > 100.0f) elapsed = 100.0f; /* cap to avoid spiral of death */
 
         if (g_rom_loaded) {
+        if (test_mode) {
+            /* Corpus runs are staged on emulated frames, so there is no reason to
+             * wait on the wall clock — batch frames and skip audio. Turns a ~40s
+             * per-ROM capture into ~10s. */
+            for (int i = 0; i < 8; i++) snes_runFrame(g_snes);
+        } else {
         sync_audio_settings(g_snes);
         float master_vol = menu_get_master_volume();
         emu_accumulator += elapsed;
@@ -950,6 +956,8 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+
+        } /* end wall-clock emulation branch */
 
         /* Copy pixels for 2D display (from last emu frame) */
         snes_setPixels(g_snes, g_pixel_buf);
@@ -1315,13 +1323,17 @@ int main(int argc, char *argv[]) {
             uint32_t elapsed = (uint32_t)(g_snes->frames * 1000 / 60);
             if (mode7_active) test_mode7_seen = true;
 
-            /* Attract screens are boring and most of them are not even 3D. Pulse
-             * Start (then A) so games walk into an actual gameplay frame. */
+            /* Attract screens are boring and most of them are not even 3D, so walk
+             * the game into a real gameplay frame. Start only fires during the boot
+             * window — in-game it is the pause button, and a paused frame is a
+             * useless capture. After that, B/A/Right keep things moving. */
             {
                 uint32_t f = g_snes->frames % 180;
-                snes_setButtonState(g_snes, 1, 3 /*Start*/, f < 8);
+                bool booting = g_snes->frames < 900;
+                snes_setButtonState(g_snes, 1, 3 /*Start*/, booting && f < 8);
                 snes_setButtonState(g_snes, 1, 0 /*B*/,     f >= 60 && f < 68);
                 snes_setButtonState(g_snes, 1, 8 /*A*/,     f >= 120 && f < 128);
+                snes_setButtonState(g_snes, 1, 7 /*Right*/, !booting && f >= 140 && f < 170);
             }
 
             /* Stage 0: 8s — 2D boot screenshot */

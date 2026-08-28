@@ -2,7 +2,7 @@
 # analyze_results.sh — Scan test results and identify patterns
 # Run after test_all_roms.sh completes.
 
-OUTDIR="E:/3dsnes/test_results"
+OUTDIR="${OUTDIR:-F:/projects/tools/3dsnes/test_results}"
 
 if [ ! -d "$OUTDIR" ]; then
     echo "No results directory found. Run test_all_roms.sh first."
