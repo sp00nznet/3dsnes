@@ -10,6 +10,8 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: write   # needed to create the release on a tag
     steps:
       - uses: actions/checkout@v4
         with:
