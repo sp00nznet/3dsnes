@@ -1,6 +1,10 @@
 # 3dSNES
 
+[![build](https://github.com/sp00nznet/3dsnes/actions/workflows/build.yml/badge.svg)](https://github.com/sp00nznet/3dsnes/actions/workflows/build.yml)
+
 **A free, open-source 3D voxel renderer for SNES games.**
+
+Download a Windows build from [Releases](https://github.com/sp00nznet/3dsnes/releases).
 
 Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/LakeSnes)) and converts the 2D tile/sprite output into 3D voxel scenes in real-time. Inspired by [3dSen](https://store.steampowered.com/app/1147940/3dSen_PC/) (NES) — this is the SNES equivalent, and it's free.
 
@@ -29,6 +33,7 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/Lak
 - 2-player keyboard input with rebindable keys
 - Save states (F5 save / F7 load)
 - LoROM, HiROM, and ExHiROM cartridge support
+- Coprocessors: DSP-1 (Super Mario Kart, Pilotwings) and Super FX / GSU-2 (Star Fox, Yoshi's Island, Doom)
 - ZIP ROM loading
 
 ### 3D Rendering
@@ -37,6 +42,7 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/Lak
 - Ground-plane shadow projection along the light direction
 - Per-layer and per-sprite alpha transparency with back-to-front sorted blending
 - Sprite grouping — adjacent multi-tile sprites merge into single coherent 3D objects
+- Adjustable 3D render resolution (1x-4x of 256x224) — trades sharpness for speed
 - FXAA anti-aliasing post-processing
 - Gradient skybox backgrounds (configurable top/bottom colors)
 - Toggle between 3D and 2D views (F1)
@@ -87,6 +93,14 @@ See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full compatibility matrix w
 | Middle drag | Pan |
 | 1 / 2 / 3 | Top-down / Isometric / Side view |
 | Esc | Quit |
+
+### Command line
+
+```
+3dsnes <rom>                     load a ROM
+3dsnes <rom> --render-scale 2    1-4, internal 3D resolution multiplier (default 3)
+3dsnes <rom> --test              capture the corpus screenshots + diagnostic JSON, then exit
+```
 
 ## Building
 
@@ -150,4 +164,7 @@ SDL2 + ImGui (display, menu, input, audio)
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for the full text and third-party notices.
+
+Note: DSP-1 emulation inside the LakeSnes fork is ported from Snes9x, whose
+license restricts commercial use. Building without DSP-1 keeps the tree MIT-only.
