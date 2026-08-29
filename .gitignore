@@ -12,3 +12,6 @@ CMakeSettings.json
 !screenshot.png
 debug_output.txt
 .claude/
+test_results/
+retest_out/
+corpus_run.log

@@ -1304,9 +1304,10 @@ int main(int argc, char *argv[]) {
         /* Draw ImGui menu bar on top of everything */
         menu_draw();
 
-        SDL_RenderPresent(g_sdl_renderer);
-
-        /* Screenshot after present so menu is captured too */
+        /* Capture BEFORE present: reading the backbuffer after SDL_RenderPresent
+         * is undefined, and on the direct3d11 backend it comes back partially
+         * discarded — the corpus captured shredded, half-black frames. menu_draw()
+         * has already run, so the menu bar is still in the shot. */
         if (menu_screenshot_requested()) {
             take_screenshot(g_sdl_renderer, g_window);
             menu_clear_screenshot_request();
@@ -1422,6 +1423,8 @@ int main(int argc, char *argv[]) {
                 g_running = false;
             }
         }
+
+        SDL_RenderPresent(g_sdl_renderer);
 
         if (!g_rom_loaded) SDL_Delay(16); /* ~60fps idle when no ROM */
     }
