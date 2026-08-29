@@ -10,18 +10,16 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/Lak
 
 ## Screenshots
 
-| | |
-|:---:|:---:|
-| ![Jurassic Park 3D](docs/jp_3d.png) | ![Jurassic Park 2D](docs/jp_2d.png) |
-| *Jurassic Park — 3D voxel diorama* | *Jurassic Park — original 2D* |
-| ![Street Fighter II](docs/sf2_3d.png) | ![Aladdin 3D](docs/aladdin_3d.png) |
-| *Super Street Fighter II — 3D arena* | *Aladdin — Agrabah marketplace* |
-| ![Lemmings 3D](docs/lemmings_3d.png) | ![Lemmings 2D](docs/lemmings_2d.png) |
-| *Lemmings — rocky cliff in 3D* | *Lemmings — original 2D* |
-| ![Arkanoid 3D](docs/arkanoid_3d.png) | ![TMNT 3D](docs/tmnt_3d.png) |
-| *Arkanoid — bricks as 3D blocks* | *TMNT IV — bridge fight* |
-| ![Zelda Triforce](docs/zelda_triforce_3d.png) | |
-| *Zelda: ALTTP — Triforce intro* | |
+Every shot below is a straight `--test` capture from the corpus run, not a hand-posed screenshot.
+
+| | | |
+|:---:|:---:|:---:|
+| ![Super Mario World](docs/hero/super_mario_world.png) | ![The Lost Vikings](docs/hero/lost_vikings.png) | ![Aladdin](docs/hero/aladdin.png) |
+| *Super Mario World — overworld as a diorama* | *The Lost Vikings — huts in the snow* | *Aladdin — Agrabah marketplace* |
+| ![Alien 3](docs/hero/alien3.png) | ![Aero the Acro-Bat](docs/hero/aero.png) | ![Mechwarrior](docs/hero/mechwarrior.png) |
+| *Alien 3 — corridor depth* | *Aero the Acro-Bat — big top* | *Mechwarrior — mech bay* |
+| ![Earthworm Jim](docs/hero/earthworm_jim.png) | | |
+| *Earthworm Jim* | | |
 
 ## Features
 
@@ -68,7 +66,18 @@ Runs real SNES emulation (powered by [LakeSnes](https://github.com/sp00nznet/Lak
 
 ## Game Compatibility
 
-See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the full compatibility matrix with 70+ tested games, ratings, screenshots, and known issues.
+All 375 US clean-dump ROMs in the test corpus are run unattended through `--test` and scored from the captures:
+
+| Status | Games |
+|---|---:|
+| 3D view draws the scene | 340 (91%) |
+| Mode 7 — falls back to 2D by design | 24 (6%) |
+| 3D view empty | 2 (1%) |
+| Does not boot (unsupported coprocessor) | 9 (2%) |
+
+See **[COMPATIBILITY.md](COMPATIBILITY.md)** for the per-game table and gallery sheets of every game.
+
+Not booted: SA-1 (Kirby Super Star, Super Mario RPG, Street Fighter Alpha 2) and DSP-4 (Top Gear 3000) are not emulated at all. Super FX is wired up but does not get Star Fox, Yoshi's Island, Vortex, Stunt Race FX or Dirt Trax FX to turn the screen on.
 
 ## Controls
 

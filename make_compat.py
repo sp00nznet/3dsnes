@@ -13,25 +13,48 @@ Status is derived, not hand-judged:
   Mode 7       - PPU mode 7 at capture; 3D falls back to 2D by design
   renders      - 3D has picture
 """
-import glob, json, math, os, sys
+import glob, json, math, os, re, sys
 from PIL import Image, ImageStat
 
 R = sys.argv[1] if len(sys.argv) > 1 else "test_results"
 GALLERY = "docs/gallery"
 PER_SHEET, COLS, CW, CH = 48, 4, 320, 240
-BLANK = 4.0          # mean luma below this is "nothing on screen"
+BLANK = 2.0          # luma std-dev below this is a flat fill: nothing drawn
 
 
-def luma(path):
+def contrast(path):
+    """Luma std-dev of the frame below the menu bar. A game that never turned the
+    screen on renders as the flat clear colour, which is std-dev 0 — mean
+    brightness cannot tell that apart from a legitimately dark scene."""
     if not os.path.exists(path):
         return -1.0
     im = Image.open(path).convert("L").crop((0, 20, 1280, 960))
-    return ImageStat.Stat(im).mean[0]
+    return ImageStat.Stat(im).stddev[0]
+
+
+# Games that never boot, and why. LakeSnes has no SA-1 or DSP-4 at all; the
+# Super FX core is wired up (cart.c maps it, gsu.c runs it) but does not get
+# these titles to turn the screen on.
+COPROCESSOR = {
+    "Dirt Trax FX": "Super FX",
+    "Kirby Super Star": "SA-1 (not emulated)",
+    "Star Fox (V1.0)": "Super FX",
+    "Star Fox (V1.2)": "Super FX",
+    "Street Fighter Alpha 2": "SA-1 (not emulated)",
+    "Super Mario RPG - Legend of the Seven Stars": "SA-1 (not emulated)",
+    "Super Mario World 2 - Yoshi's Island (V1.0)": "Super FX 2",
+    "Top Gear 3000": "DSP-4 (not emulated)",
+    "Vortex": "Super FX",
+}
 
 
 def pretty(basename):
     """Undo the filename sanitising well enough to read."""
-    n = basename.replace("__U_____", "").replace("_", " ").strip()
+    n = basename.replace("_", " ")
+    n = re.sub(r"\b(\w+) s\b", r"\1's", n)        # Paladin s Quest -> Paladin's Quest
+    n = re.sub(r"\s+\(?U\)?\s", " ", n)           # drop the (U) region tag
+    n = re.sub(r"\bM\d\b", "", n)                 # drop multi-language tags
+    n = re.sub(r"\b(V\d[\d.]*)\b", r"(\1)", n)    # V1.2 -> (V1.2)
     return " ".join(n.split())
 
 
@@ -43,9 +66,9 @@ def collect():
         except (json.JSONDecodeError, OSError):
             continue
         b = d["test_basename"]
-        shots3 = [(luma(f"{R}/{b}_3d_0{i}.png"), f"{R}/{b}_3d_0{i}.png") for i in (3, 4, 5)]
+        shots3 = [(contrast(f"{R}/{b}_3d_0{i}.png"), f"{R}/{b}_3d_0{i}.png") for i in (3, 4, 5)]
         shots3 = [s for s in shots3 if s[0] >= 0]
-        shots2 = [luma(f"{R}/{b}_2d_0{i}.png") for i in (1, 2, 6)]
+        shots2 = [contrast(f"{R}/{b}_2d_0{i}.png") for i in (1, 2, 6)]
         shots2 = [s for s in shots2 if s >= 0]
         if not shots3:
             continue
@@ -104,8 +127,13 @@ def write_md(games):
             n = len(by(s))
             w(f"| {s} | {n} ({100*n/tot:.0f}%) | {meaning} |\n")
         w("\n## Known gaps\n\n")
-        for g in by("no output") + by("3D blank"):
-            w(f"- **{g['name']}** — {g['status']}\n")
+        w("Every game that never turns the screen on needs a cartridge coprocessor "
+          "the emulation core does not cover — none of these is a 3D-rendering "
+          "failure.\n\n")
+        for g in by("no output"):
+            w(f"- **{g['name']}** — {COPROCESSOR.get(g['name'], 'does not boot')}\n")
+        for g in by("3D blank"):
+            w(f"- **{g['name']}** — runs in 2D, 3D view stayed empty\n")
         w("\n## Gallery\n\n")
         nsheets = max(g.get("sheet", 1) for g in games)
         for n in range(1, nsheets + 1):

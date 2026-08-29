@@ -36,7 +36,21 @@ static void set_error(LuaScripting *ls, const char *msg) {
     menu_show_toast(msg);
 }
 
+/* Instruction budget for a single script call (Start/Update/LateUpdate). */
+#define LUA_INSTRUCTION_BUDGET 1000000
+
+/* Instruction count hook to prevent infinite loops */
+static void instruction_hook(lua_State *L, lua_Debug *ar) {
+    (void)ar;
+    luaL_error(L, "script exceeded instruction limit (infinite loop?)");
+}
+
 static bool safe_call(LuaScripting *ls, int nargs, int nresults) {
+    /* Re-arm the runaway guard for THIS call. lua_sethook resets the counter,
+     * and without that the budget is cumulative over the whole session — a
+     * perfectly fine per-frame script gets killed as an "infinite loop" a few
+     * hundred frames in. */
+    lua_sethook(ls->L, instruction_hook, LUA_MASKCOUNT, LUA_INSTRUCTION_BUDGET);
     if (lua_pcall(ls->L, nargs, nresults, 0) != LUA_OK) {
         const char *err = lua_tostring(ls->L, -1);
         set_error(ls, err ? err : "unknown Lua error");
@@ -44,12 +58,6 @@ static bool safe_call(LuaScripting *ls, int nargs, int nresults) {
         return false;
     }
     return true;
-}
-
-/* Instruction count hook to prevent infinite loops */
-static void instruction_hook(lua_State *L, lua_Debug *ar) {
-    (void)ar;
-    luaL_error(L, "script exceeded instruction limit (infinite loop?)");
 }
 
 static uint64_t get_file_mtime(const char *path) {
@@ -539,8 +547,8 @@ bool lua_scripting_load(LuaScripting *ls, const char *script_path) {
     luaL_openlibs(ls->L);
     register_api(ls);
 
-    /* Set instruction limit to prevent infinite loops (1M instructions) */
-    lua_sethook(ls->L, instruction_hook, LUA_MASKCOUNT, 1000000);
+    /* Runaway guard; safe_call re-arms it before every script entry point. */
+    lua_sethook(ls->L, instruction_hook, LUA_MASKCOUNT, LUA_INSTRUCTION_BUDGET);
 
     /* Load and execute the script file */
     if (luaL_loadfile(ls->L, script_path) != LUA_OK) {
