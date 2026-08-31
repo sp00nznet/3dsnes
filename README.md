@@ -21,6 +21,39 @@ Every shot below is a straight `--test` capture from the corpus run, not a hand-
 | ![Earthworm Jim](docs/hero/earthworm_jim.png) | | |
 | *Earthworm Jim* | | |
 
+## Status
+
+**v0.1.1** — Windows binaries on the [Releases](https://github.com/sp00nznet/3dsnes/releases) page, built by CI from the tag.
+
+Where it stands: 340 of the 375 games in the test corpus (91%) draw a real 3D
+scene, verified by an unattended run of the whole corpus rather than by
+spot-checks. The renderer is a CPU rasterizer, so framerate is the main cost —
+roughly 15-25 FPS at the default 3x internal resolution on a modern desktop.
+Emulation is decoupled from rendering, so the game itself still runs at 60 FPS;
+drop **Graphics > 3D Render Scale** to 2x or 1x to trade sharpness for speed.
+
+### Known limitations
+
+- **Coprocessors.** SA-1 and DSP-4 are not emulated at all. Super FX is mapped
+  and clocked but does not get its games to boot. Nine corpus games are affected
+  — see [COMPATIBILITY.md](COMPATIBILITY.md).
+- **Mode 7** cannot be voxelized; those frames fall back to the 2D view.
+- **Performance.** The software rasterizer is single-threaded.
+- Only two games ship tuned per-game profiles (Zelda: ALTTP, Super Mario World).
+  Everything else uses the generic profile, which is decent but not tailored.
+
+### Testing against the corpus
+
+`--test` boots a ROM, walks it past the attract screen with scripted input,
+captures three 3D frames plus a diagnostic JSON, and exits. `test_all_roms.sh`
+runs that over a ROM directory (~15s per game) and `make_compat.py` turns the
+output into COMPATIBILITY.md and the gallery sheets:
+
+```bash
+ROMDIR="X:/Roms/Nintendo SNES" ./test_all_roms.sh   # LIMIT=20 for a sample
+python make_compat.py
+```
+
 ## Features
 
 ### Emulation
